@@ -268,10 +268,18 @@ def prose_of(e: Entry, milestones: dict[str, str]) -> str:
 
 
 def risk_path_hit(path: str) -> bool:
+    """A Scope hint path touches a riskPaths glob when it matches it, or when it
+    is the direct parent of the glob's literal prefix (`apps/server/src/db/` holds
+    `apps/server/src/db/schema/**`; a package root like `apps/server/` does not count)."""
+    is_dir = path.endswith("/")
     path = path.rstrip("/")
     for glob in RISK_PATHS:
         pat = glob.replace("**/", "*").replace("/**", "*").replace("**", "*")
         if fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path + "/", pat):
+            return True
+        literal = re.split(r"[*?\[]", glob, maxsplit=1)[0]
+        rest = literal[len(path) + 1:].strip("/") if literal.startswith(path + "/") else None
+        if is_dir and rest is not None and "/" not in rest:  # the direct parent only
             return True
     return False
 
@@ -469,7 +477,9 @@ class GhError(RuntimeError):
     pass
 
 
-RETRYABLE = re.compile(r"rate limit|secondary|HTTP 403|HTTP 429|abuse|HTTP 5\d\d|timeout|connection", re.I)
+# A 403 is retried only when GitHub says it is a rate or abuse limit; any other
+# 403 (missing scope, no access) is permanent and fails at once.
+RETRYABLE = re.compile(r"rate limit|secondary|abuse|HTTP 429|HTTP 5\d\d|timeout|connection", re.I)
 
 
 def run(args: list[str], what: str) -> str:
@@ -574,6 +584,9 @@ def main() -> int:
                 print(f"Labels missing (run .claude/scripts/bootstrap-labels.sh): {', '.join(missing_labels)}")
             if missing_ms:
                 print(f"Milestones to create: {', '.join(missing_ms)}")
+            held = [e.ident for e in selected if set(e.labels) & MAINTAINER_APPLIED]
+            if held:
+                print(f"Filed without their maintainer-applied label, for you to add right after --apply: {', '.join(held)}")
             print(f"\nIssues to create: {len(todo)} · already filed: {len([e for e in selected if e.ident in existing])}\n")
             for e in sorted(selected, key=lambda e: e.line):
                 d = depth(e, by_id)
@@ -701,7 +714,11 @@ def main() -> int:
     print(f"\nDone: {len(todo)} issues created, {linked} relationships added, {readied} set ready.")
     held = [e for e in selected if set(e.labels) & MAINTAINER_APPLIED]
     if held:
-        print("\nThese carry a maintainer-applied label that only the maintainer adds (they stay status:new):")
+        print("\n" + "!" * 78)
+        print("ACTION NEEDED NOW: these issues are filed WITHOUT their maintainer-applied label.")
+        print("Orchestrate pulls maintainer-only work out by that label alone, so until you add it,")
+        print("orchestrating their epic would dispatch an agent to them. Run each line:")
+        print("!" * 78)
         for e in held:
             for lab in sorted(set(e.labels) & MAINTAINER_APPLIED):
                 print(f"  ! gh api --method POST repos/{REPO}/issues/{num[e.ident]}/labels -f 'labels[]={lab}'   # {e.ident} {e.title}")
