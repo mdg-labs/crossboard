@@ -30,7 +30,7 @@ Crossboard is a self-hostable web app that shows every open GitHub issue across 
 
 ### Always-shared files
 
-`CLAUDE.md`, `docs/SPEC.md`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, root `tsconfig*.json`, lint/format config, `.claude/workflow.json`, `.github/workflows/**`, `Dockerfile`, `apps/server/src/db/schema/**` and the migrations folder (one migration sequence for the whole app).
+`CLAUDE.md`, `docs/SPEC.md`, `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, root `tsconfig*.json`, lint/format config, `.claude/workflow.json`, `.github/workflows/**`, `Dockerfile`, `apps/server/src/db/schema/**` and the migrations folder (one migration sequence for the whole app), `apps/web/components.json` and `apps/web/src/components/ui/**` (the vendored coss ui components).
 
 ### Entry points
 
@@ -52,6 +52,7 @@ A capability is reachable only once it is wired into one of these; an unwired mo
 - **Background work goes through the `jobs` interface** (in-process for v1).
 - **Tokens and secrets are never logged**, nor webhook payload bodies of private repos at info level.
 - The filter parser/evaluator lives only in `packages/query`; server and web never re-implement filter semantics.
+- **UI is composed from coss ui (D-20).** Each UI element uses the component SPEC §10.1 maps to it, following the `coss` skill. Components are added to `apps/web/src/components/ui/` with the shadcn CLI, never written or restyled by hand there. An element the map does not cover goes to SPEC §14 first. Only the dependency graph SVG (FR-27) and the `markdown-body` container (FR-41) are hand-built.
 
 ### Risk review
 
