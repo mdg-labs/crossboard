@@ -54,8 +54,8 @@ depends: []
 - [ ] `pnpm install --frozen-lockfile` and `pnpm gate` succeed from a clean clone; `pnpm-workspace.yaml` lists `apps/*`, `packages/*` and `e2e`
 - [ ] Node 24 is pinned by `.nvmrc` and `engines`, pnpm 10 by the root `packageManager` field; every package is ES modules and private
 - [ ] the shared `tsconfig` base is `strict` with `noUncheckedIndexedAccess`; each package extends it
-- [ ] ESLint flat config with `typescript-eslint` strict and Prettier with default settings cover the whole workspace and ignore `apps/web/src/components/ui/`; `pnpm format:check` fails on an unformatted file
-- [ ] every package has `lint`, `typecheck` and `test` scripts (and `build` where it builds), each with one passing Vitest test; `apps/web` builds a placeholder page with Vite; the root has `lint`, `typecheck`, `test`, `build`, `format:check` and `gate` (all of them in sequence)
+- [ ] ESLint flat config with `typescript-eslint` strict and Prettier with default settings cover the workspace and ignore the vendored and generated paths: `.claude/`, `.agents/`, `skills-lock.json`, `pnpm-lock.yaml`, `apps/web/src/components/ui/` and `apps/server/src/db/migrations/`; `pnpm format:check` fails on an unformatted file
+- [ ] every package has `lint`, `typecheck` and `test` scripts (and `build` where it builds), each with one passing Vitest test; `apps/web` builds a placeholder page with Vite; the root has `lint`, `typecheck`, `test`, `build`, `format:check` and `gate` (all of them in sequence); the root `test` never runs end-to-end tests, which live in a separate `test:e2e` script
 - [ ] `packages/query` declares no runtime `dependencies`
 - [ ] `.gitignore` covers `node_modules`, build output and local data directories
 - [ ] the checks of workflow.json for the touched paths pass
@@ -170,9 +170,9 @@ depends: [M1.4]
 **Acceptance criteria**
 - [ ] coss ui is initialised with the shadcn CLI (`@coss/style`): `apps/web/components.json` exists, components are added to `apps/web/src/components/ui/` by the CLI only, and the Tailwind CSS 4 theme tokens come from coss
 - [ ] Inter and Geist Mono are bundled from npm font packages and wired to `--font-sans`, `--font-heading` and `--font-mono`; no font, stylesheet or script is loaded from another origin
-- [ ] the app root wraps its tree in Base UI's `CSPProvider` with `disableStyleElements`, and the scrollbar CSS it would have injected is in the app stylesheet; with the SPEC §9.3 CSP the shell renders with no CSP violation in the browser console
+- [ ] the app root wraps its tree in Base UI's `CSPProvider` with `disableStyleElements` (the scrollbar CSS it would have injected is in the app stylesheet), and in coss's `ToastProvider`, `AnchoredToastProvider` and `TooltipProvider`; a component test proves the rendered shell contains no `<style>` element and no `style` attribute in its markup
 - [ ] `apps/web/src/router.tsx` defines code-based TanStack Router routes; `apps/web/src/routes/index.tsx` renders an empty main area; TanStack Query and `hc<AppType>` live in `apps/web/src/lib/`
-- [ ] the top bar (`apps/web/src/components/top-bar/`) uses the SPEC §10.1 components (Toolbar, Group) with empty slots for the filter, switcher, sync status and user menu
+- [ ] the top bar (`apps/web/src/components/top-bar/`) uses the SPEC §10.1 components: a Toolbar for the switcher, sync status and user menu slots, and the filter slot in a Group outside the Toolbar's arrow-key focus, so arrow keys in the filter move the caret
 - [ ] light and dark follow the system; the layout targets widths of 1024 px and more, with no mobile layout (D-13); icons come from `lucide-react`
 - [ ] a component test renders the shell
 - [ ] Reachable via: `apps/server/src/app.ts` serves the built SPA → `apps/web/src/router.tsx` → `/`
@@ -313,7 +313,7 @@ depends: [M1.4]
 **Acceptance criteria**
 - [ ] handlers are registered by name; `enqueue` runs a payload through its handler; `delayMs` delays it
 - [ ] a `key` deduplicates pending jobs: enqueueing the same key while one is pending keeps one job
-- [ ] jobs carrying an installation id run at most 2 at a time per installation and 4 overall; others queue
+- [ ] jobs carrying an installation id run at most 2 at a time per installation and 4 overall (SPEC §7.3); this is separate from the GitHub client's own request limit
 - [ ] a job is marked as background or interactive when enqueued, so later guardrails can act on background jobs only
 - [ ] `schedule` runs a named job every `intervalMs`; a run still in progress is not started twice
 - [ ] a failing handler is logged and does not stop the queue; jobs are not persisted
@@ -345,7 +345,7 @@ depends: [M1.4]
 - [ ] the only non-`GET` calls are the D-18 credential exchanges; a unit test lists the client's methods and fails if one sends another non-`GET` REST call
 - [ ] each call is logged at `debug` without the token or response body; errors carry status and GitHub's message, never the token
 - [ ] server tests use `msw` handlers for these endpoints; no test reaches the real GitHub
-- [ ] a lint rule forbids importing Octokit outside `apps/server/src/github/`
+- [ ] a lint rule forbids importing `octokit` and `@octokit/*` outside `apps/server/src/github/`, except `@octokit/webhooks` in `apps/server/src/webhooks/`
 - [ ] Reachable via: `apps/server/src/index.ts` creates the client from config and passes it to `apps/server/src/app.ts`, where route modules receive it
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -370,7 +370,7 @@ depends: [M1.4]
 
 **Acceptance criteria**
 - [ ] `apps/server/src/security/` encrypts with AES-256-GCM, a random 12-byte IV per value and a key derived from `CROSSBOARD_APP_SECRET` with HKDF-SHA256 (info `crossboard-encryption-v1`), stored as `v1:<iv>:<ciphertext>:<tag>` in base64url; tampered ciphertext and a different secret fail to decrypt (tests)
-- [ ] with neither env credentials nor stored ones, each start generates a random setup token, stores only its hash in `app_config` (replacing the previous one) and logs the token at `warn`
+- [ ] `apps/server/src/auth/credentials.ts` returns the App credentials from all six `GITHUB_*` variables when set, otherwise from `app_config`, otherwise nothing; with nothing, each start generates a random setup token, stores only its hash in `app_config` (replacing the previous one) and logs the token at `warn`
 - [ ] in that state every request except `/setup`, `/setup/*` (including `GET /setup/callback`), `/api/setup/*`, static assets and `/api/health` redirects to `/setup`
 - [ ] `POST /api/setup/token` with `{ token }` sets an HTTP-only `SameSite=Lax` cookie (`Secure` except on `http://localhost`), signed with an HMAC key derived from `CROSSBOARD_APP_SECRET` and valid 30 minutes; a wrong token answers `401` and sets nothing; the comparison is constant-time; a test asserts the `Set-Cookie` attributes
 - [ ] `apps/server/src/security/` provides the check that rejects a missing or foreign `Origin` (against `CROSSBOARD_PUBLIC_URL`) and a non-JSON body; `POST /api/setup/token` uses it (tests for both rejections)
@@ -379,7 +379,7 @@ depends: [M1.4]
 
 **Out of scope** The manifest and callback (owned by "Create the instance's GitHub App from a manifest"); the `/setup` page (owned by "Guide the operator through first-run setup on the setup page"); applying the `Origin`/JSON check to session routes (owned by "Keep server-side sessions and protect state-changing routes").
 
-**Scope hint** `apps/server/src/security/`, `apps/server/src/auth/setup/`, `apps/server/src/app.ts` · ~320 changed lines · Expected files: 9 reviewable
+**Scope hint** `apps/server/src/security/`, `apps/server/src/auth/setup/`, `apps/server/src/auth/credentials.ts`, `apps/server/src/app.ts` · ~340 changed lines · Expected files: 10 reviewable
 
 ### Create the instance's GitHub App from a manifest
 
@@ -394,7 +394,7 @@ depends: [M2.2, M2.3]
 
 **Design references** FR-48, FR-49, FR-50, SPEC §5.1 (permissions and events), §4.8, §9.3 (encryption, CSRF), D-3, D-18, CLAUDE.md `### Risk review` (tokens)
 
-**Current state** the setup gate, setup cookie, encryption helper and `Origin`/JSON check exist in `apps/server/src/security/` and `apps/server/src/auth/setup/`.
+**Current state** the setup gate, setup cookie, encryption helper, `Origin`/JSON check and the credential accessor `apps/server/src/auth/credentials.ts` exist; nothing stores credentials yet.
 
 **Acceptance criteria**
 - [ ] `POST /api/setup/manifest` (setup cookie required, `Origin`/JSON check applied) takes the owning account (personal or org login) and App name (default `Crossboard (<host>)`) and returns the manifest, the target URL (`/settings/apps/new` or `/organizations/<org>/settings/apps/new`) and a random `state` also stored in the setup cookie
@@ -402,13 +402,13 @@ depends: [M2.2, M2.3]
 - [ ] `GET /setup/callback` rejects a missing or mismatched `state` and a missing setup cookie with no side effect; otherwise it exchanges the code via the manifest conversion and stores `id`, `slug`, `client_id`, `client_secret`, `webhook_secret` and `pem` encrypted in `app_config`, then redirects to `/settings`
 - [ ] a test with sentinel values proves `client_secret`, `webhook_secret` and `pem` are stored only as ciphertext and appear in no log line and no response
 - [ ] after a successful callback the setup routes answer `404` until the stored credentials are deleted
-- [ ] `apps/server/src/auth/credentials.ts` returns the App credentials from all six `GITHUB_*` variables when set (they take precedence and setup is never served, FR-50), otherwise from `app_config`
+- [ ] with all six `GITHUB_*` variables set, the credential accessor returns them and the setup routes are never served (FR-50); a test covers both sources
 - [ ] Reachable via: `apps/server/src/app.ts` mounts `POST /api/setup/manifest` and `GET /setup/callback`
 - [ ] the checks of workflow.json for the touched paths pass
 
 **Out of scope** The `/setup` page (owned by "Guide the operator through first-run setup on the setup page"); sign-in (owned by "Sign users in with GitHub and enforce the allowlist").
 
-**Scope hint** `apps/server/src/auth/setup/`, `apps/server/src/auth/credentials.ts`, `apps/server/src/app.ts` · ~320 changed lines · Expected files: 8 reviewable
+**Scope hint** `apps/server/src/auth/setup/`, `apps/server/src/app.ts` · ~300 changed lines · Expected files: 7 reviewable
 
 ### Guide the operator through first-run setup on the setup page
 
@@ -446,7 +446,7 @@ depends: [M2.1, M2.3, M1.8]
 
 **Summary** Add session rows referenced by a hashed cookie token with sliding 30-day expiry, the session middleware for `/api/*`, sign-out, the daily cleanup job, the SPA's redirect to sign-in, CSRF protection on every state-changing route and the CSP header.
 
-**Design references** FR-5, FR-6, FR-10a, SPEC §7.4 (auth requirement), §9.3 (cookies, CSRF, CSP), §8.1 (`sessions`, `user_tokens`), D-20, CLAUDE.md `### Risk review` (sessions and CSRF)
+**Design references** FR-5, FR-6, FR-10a, FR-47, SPEC §7.4 (auth requirement), §9.3 (cookies, CSRF, CSP), §8.1 (`sessions`, `user_tokens`), D-20, CLAUDE.md `### Risk review` (sessions and CSRF)
 
 **Current state** the `Origin`/JSON check exists in `apps/server/src/security/` and guards the setup routes only.
 
@@ -458,13 +458,14 @@ depends: [M2.1, M2.3, M1.8]
 - [ ] a daily job (jobs interface) deletes expired sessions, then the tokens of users left without a session
 - [ ] every `POST`, `PATCH` and `DELETE` except `/webhooks/github` goes through the existing `Origin`/JSON check (tests on a session route)
 - [ ] every response carries the CSP of SPEC §9.3
-- [ ] an SPA route loaded without a session redirects to `/auth/login?return=<path>`; only same-origin relative paths are kept (test with an absolute and a protocol-relative `return`)
-- [ ] Reachable via: `apps/server/src/app.ts` mounts the session and CSRF middleware and `POST /auth/logout`; `apps/web/src/router.tsx` redirects
+- [ ] the server's SPA fallback answers a page request without a valid session with a redirect to `/auth/login?return=<path>`, except `/setup`, `/setup/*` and `/auth/*`; only same-origin relative paths are kept (tests: an exempt path, an absolute and a protocol-relative `return`)
+- [ ] the SPA's API client sends the browser to `/auth/login?return=<current path>` on any `401`
+- [ ] Reachable via: `apps/server/src/app.ts` mounts the session and CSRF middleware, the SPA fallback redirect and `POST /auth/logout`; the API client in `apps/web/src/lib/`
 - [ ] the checks of workflow.json for the touched paths pass
 
 **Out of scope** Creating sessions at sign-in (owned by "Sign users in with GitHub and enforce the allowlist").
 
-**Scope hint** `apps/server/src/auth/sessions/`, `apps/server/src/security/`, `apps/server/src/app.ts`, `apps/web/src/router.tsx` · ~330 changed lines · Expected files: 10 reviewable
+**Scope hint** `apps/server/src/auth/sessions/`, `apps/server/src/security/`, `apps/server/src/app.ts`, `apps/web/src/lib/` · ~340 changed lines · Expected files: 10 reviewable
 
 ### Sign users in with GitHub and enforce the allowlist
 
@@ -540,7 +541,7 @@ depends: [M2.7]
 **Current state** the top bar has an empty user-menu slot; there is no `/settings` route.
 
 **Acceptance criteria**
-- [ ] `GET /api/me` returns the session user (login, name, avatar), their installations from `user_installations` with account login, type and active flag, and the install URL `https://github.com/apps/<slug>/installations/new`; no token or secret appears in the response (test)
+- [ ] `GET /api/me` returns the session user (login, name, avatar), their installations from `user_installations` with account login, type and active flag, and the install URL `https://github.com/apps/<slug>/installations/new`; no token or secret appears in the response, and a second user's installations never appear (tests)
 - [ ] `/settings` lists the installations with the SPEC §10.1 components (Card, Table, Badge for the active flag) and the install link; it shows loading, an empty state explaining how to install the App, and an error state with retry (component tests for all three)
 - [ ] the top bar's user menu (Menu, Avatar) signs out through `POST /auth/logout`
 - [ ] GitHub's redirect to the App's `setup_url` (`/settings`) after installing lands on this page, through sign-in when needed
@@ -567,11 +568,12 @@ depends: [M2.8, M1.6]
 **Current state** nothing yet; `pnpm-workspace.yaml` already lists `e2e` but the directory does not exist.
 
 **Acceptance criteria**
-- [ ] `e2e/` is the `@crossboard/e2e` package with `lint`, `typecheck` and `test` scripts and a Playwright config
+- [ ] `e2e/` is the `@crossboard/e2e` package with `lint`, `typecheck` and `test:e2e` scripts and a Playwright config; the root `test` does not run it
 - [ ] the fake GitHub serves, from fixtures: the OAuth authorize and token endpoints, `GET /user`, `GET /user/installations`, `GET /user/installations/{id}/repositories`, `POST /app/installations/{id}/access_tokens`, `GET /installation/repositories`, and a GraphQL endpoint that answers each query by its operation name from a fixture file, so later items only add fixtures
 - [ ] the container runs with env App credentials (FR-50) and the two base URLs pointing at the fake
 - [ ] a Playwright test signs in as an allowed user and sees the settings page with an installation; a second test signs in as a non-allowed user and sees the "not allowed" page
-- [ ] `ci.yml` builds the image and runs `pnpm --filter ./e2e test` against it; the job keeps `contents: read` permissions
+- [ ] every Playwright test fails on any CSP violation reported in the browser console, so the served CSP and the SPA stay compatible
+- [ ] `ci.yml` builds the image and runs `pnpm --filter ./e2e test:e2e` against it; the job keeps `contents: read` permissions
 - [ ] the checks of workflow.json for the touched paths pass
 
 **Out of scope** Issue fixtures and the list smoke test (owned by "Edit and validate the filter in the list"); detail and board smoke tests (owned by "Show the issue detail panel and route" and "Show a board's columns and cards").
@@ -605,7 +607,7 @@ depends: [M2]
 id: M3.1
 parent: M3
 labels: [chore, area:ci, maintainer-only]
-depends: [M2.9, M2.10, M1.5]
+depends: [M2.8, M2.10, M1.5]
 ```
 
 **Summary** The maintainer deploys a private Crossboard instance with a public HTTPS URL, built from the repository's `Dockerfile` on `dev`, creates its GitHub App through `/setup`, and installs it on their account and at least one organization, so the behaviour spike has a real installation and real webhook deliveries (D-15).
@@ -716,7 +718,7 @@ labels: [feat, area:sync, area:db, safety-critical]
 depends: [M3.7, M2.7]
 ```
 
-**Summary** For each active installation, list its repositories, check them in batched GraphQL queries, mark archived and issues-disabled ones `skipped`, and enqueue the initial sync of the rest; an installation that stops being active is purged. Discovery and purging are functions other modules call.
+**Summary** For each active installation, list its repositories, check them in batched GraphQL queries, mark archived and issues-disabled ones `skipped`, and leave the rest `pending` for the initial sync; an installation that stops being active is purged. Discovery and purging are functions other modules call.
 
 **Design references** SPEC §5.3 (discovery), §6.1 (triggers), §8.1 (`repos`), §8.2 (purging), FR-3, D-7, CLAUDE.md `### Risk review` (cross-user isolation)
 
@@ -761,7 +763,7 @@ depends: [M3.4]
 - [ ] Reachable via: discovery enqueues the sync job for each `pending` repo; `apps/server/src/index.ts` resumes it at startup
 - [ ] the checks of workflow.json for the touched paths pass
 
-**Out of scope** Dependencies, parents and paging connections longer than one page (owned by "Sync dependencies and parents, and page long connections"); refetching single issues (owned by "Apply issue, sub-issue, dependency, comment and label webhooks").
+**Out of scope** Dependencies, parents and paging connections longer than one page (owned by "Sync dependencies and parents, and page long connections"); removing dropped issues by the SPEC §8.2 rules and refetching single issues (owned by "Remove issues by the SPEC §8.2 rules and refetch single issues").
 
 **Scope hint** `apps/server/src/sync/`, `apps/server/src/github/queries/`, `apps/server/src/index.ts` · ~350 changed lines · Expected files: 7 reviewable
 
@@ -789,9 +791,36 @@ depends: [M3.5]
 - [ ] Reachable via: the sync job from "Sync a repository's open issues, labels and assignees" stores relations in each run
 - [ ] the checks of workflow.json for the touched paths pass
 
-**Out of scope** Removing refs and edges of closed, deleted or transferred issues (owned by "Apply issue, sub-issue, dependency, comment and label webhooks"); pruning unreferenced refs (owned by "Run the daily full resync and prune orphaned references").
+**Out of scope** Removing refs and edges of closed, deleted or transferred issues (owned by "Remove issues by the SPEC §8.2 rules and refetch single issues"); pruning unreferenced refs (owned by "Run the daily full resync and prune orphaned references").
 
 **Scope hint** `apps/server/src/sync/`, `apps/server/src/github/queries/` · ~300 changed lines · Expected files: 6 reviewable
+
+### Remove issues by the SPEC §8.2 rules and refetch single issues
+
+```meta
+id: M3.8
+parent: M3
+labels: [feat, area:sync]
+depends: [M3.6]
+```
+
+**Summary** Add the one removal function every path uses (sync, webhooks, reconciliation) implementing the SPEC §8.2 rules, and a single-issue refetch by node id; the sync's dropped issues now go through them instead of a plain delete.
+
+**Design references** SPEC §8.2, §5.3 (selection, `nodes(ids: [...])`), §6.2 (refetch semantics), §5.5 (transfers as delete plus new), FR-24, FR-25
+
+**Current state** the sync replaces a repo's issues, refs and edges in one transaction and simply deletes issues no longer returned.
+
+**Acceptance criteria**
+- [ ] `apps/server/src/sync/remove.ts` removes an issue as closed (its row goes; its ref becomes `CLOSED`; edges where it blocks stay) or as gone (deleted, transferred or no longer readable: its row, its ref and every edge mentioning it go, and every synced issue on the other side is refetched)
+- [ ] `apps/server/src/sync/refetch.ts` refetches one or more issues by node id (batches of up to 50 via `nodes(ids: [...])`) with the SPEC §5.3 selection and updates each issue with its labels, assignees, refs and edges; a result that is closed is removed as closed, one that is null or unreadable as gone
+- [ ] issues a full sync no longer returns are looked up with that batch refetch and removed by these rules
+- [ ] integration tests: a closed blocker stays struck through on the issue it blocked; a deleted cross-repo blocker disappears and the blocked issue's not-accessible count follows FR-24
+- [ ] Reachable via: the sync job from "Sync a repository's open issues, labels and assignees" calls both functions for dropped issues
+- [ ] the checks of workflow.json for the touched paths pass
+
+**Out of scope** Webhook handlers that call these functions (owned by "Apply issue, sub-issue, dependency, comment and label webhooks"); polling (owned by "Reconcile ready repositories by polling with ETags").
+
+**Scope hint** `apps/server/src/sync/remove.ts`, `apps/server/src/sync/refetch.ts`, `apps/server/src/sync/`, `apps/server/src/github/queries/` · ~320 changed lines · Expected files: 6 reviewable
 
 ## M4 — Query engine
 
@@ -966,7 +995,7 @@ depends: [M5.1, M2.8]
 **Current state** `/` renders an empty main area under the top bar; `/settings` and the user menu exist.
 
 **Acceptance criteria**
-- [ ] `/` shows the total count and a Table virtualized with TanStack Virtual, loading 100 rows per page as the user scrolls
+- [ ] `/` shows the total count and a Table virtualized with TanStack Virtual inside the Table's own scroll container (spacer rows above and below keep column widths), loading 100 rows per page as the user scrolls; a component test renders 1,000 rows with fewer than 100 in the DOM
 - [ ] columns: repo, number, title, issue type as a Badge in its SPEC §5.4 color (unknown as GRAY), labels as Badges in their repo's color, assignee Avatars, milestone, `blocked by N` / `blocks N` Badges where N counts open readable plus not-accessible relations and a badge with N = 0 is hidden, the red "blocked" Badge, sub-issue Progress when total > 0, and the updated time
 - [ ] `apps/web/src/lib/time.ts` and one time component render times relative with the absolute time in a Tooltip in the browser's time zone; every later view reuses them
 - [ ] a Select offers the FR-13 sort options; `?q=` and `?sort=` reflect the current filter and sort and restore them on load
@@ -990,17 +1019,17 @@ depends: [M5.2, M2.9]
 
 **Summary** The top bar's filter input validates with the shared parser as the user types, underlines errors while keeping the last valid results, shows warnings, appends qualifiers when a label, assignee or repo is clicked, supports the list's keyboard shortcuts, and is covered by a list smoke test.
 
-**Design references** FR-15, FR-17, FR-18, FR-19, FR-21, SPEC §10 (keyboard), §10.1 (Filter input, Filter warnings, Keyboard hints), §7.6 (component and e2e tests), D-20, the `coss` skill (`references/primitives/input-group.md`)
+**Design references** FR-15, FR-17, FR-18, FR-19, FR-21, SPEC §10 (keyboard), §10.1 (Filter input, Filter error underline, Filter warnings, Keyboard hints), §7.6 (component and e2e tests), D-20, D-22, the `coss` skill (`references/primitives/input-group.md`)
 
 **Current state** the list reads `?q=` but has no input; the fake GitHub has no issue fixtures.
 
 **Acceptance criteria**
-- [ ] the filter is an Input Group in the top bar; it parses with `packages/query` on change; an error underlines its range and the list keeps the last valid results; warnings show as an Alert, non-fatal
+- [ ] the filter is an Input Group in the top bar; it parses with `packages/query` on change; an error underlines its range through a text layer mirrored behind the input (D-22) and the list keeps the last valid results; warnings show as an Alert, non-fatal
 - [ ] submitting updates `?q=` and reloads the list
 - [ ] clicking a label, assignee or repo appends `label:"x"`, `assignee:x` or `repo:o/r`; a label whose name contains a double quote does nothing when clicked
-- [ ] keyboard: `/` focuses the filter, `j`/`k` move the selection, `o` opens the selected issue on GitHub, `Esc` leaves the input; shortcuts are hinted with Kbd
-- [ ] component tests: error underlining and keyboard navigation
-- [ ] the fake GitHub gains fixtures for discovery and sync of two repos; a Playwright test lists and filters issues from them, run by `pnpm --filter ./e2e test` in `ci.yml`
+- [ ] keyboard: `/` focuses the filter, `j`/`k` move the selection, `o` opens the selected issue on GitHub; shortcuts are hinted with Kbd
+- [ ] component tests: error underlining, keyboard navigation, and arrow keys moving the caret inside the filter
+- [ ] the fake GitHub gains fixtures for discovery and sync of two repos; a Playwright test lists and filters issues from them, added to `e2e/` and run by the `ci.yml` end-to-end job
 - [ ] Reachable via: the top bar in `apps/web/src/components/top-bar/`, on the `/` route
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -1026,7 +1055,7 @@ depends: [M5.3]
 **Acceptance criteria**
 - [ ] `GET /api/suggest?field=&prefix=` supports `label`, `assignee`, `author`, `repo`, `org`/`user` (equivalent), `type` and `milestone`; matches by case-insensitive prefix; returns at most 20 distinct values; an unknown field answers `400`
 - [ ] values come only from repos in the session user's access (integration test with two users)
-- [ ] the filter input uses Autocomplete to suggest qualifier names, and values after `:` and after each comma, using the text after the last comma without quotes as the prefix; choosing one inserts it, quoted when it contains a space
+- [ ] the filter input uses Autocomplete in its custom-flow form from the coss autocomplete reference (`filter={null}`, a controlled `value`, `itemToStringValue`) to suggest qualifier names, and values after `:` and after each comma, using the text after the last comma without quotes as the prefix; choosing one inserts it, quoted when it contains a space
 - [ ] Reachable via: `apps/server/src/app.ts` mounts `GET /api/suggest`; the filter input in the top bar
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -1040,7 +1069,7 @@ depends: [M5.3]
 id: M5.5
 parent: M5
 labels: [feat, area:server, area:web]
-depends: [M5.3]
+depends: [M5.2]
 ```
 
 **Summary** Add the saved-views API and the top bar's view switcher, so a user can name the current filter and sort, reopen it, rename it and delete it.
@@ -1105,7 +1134,7 @@ depends: [M5.1]
 
 **Out of scope** Body, comments and sub-issues (owned by "Fetch issue details lazily and sanitize them").
 
-**Scope hint** `apps/server/src/api/issues.ts`, `apps/server/src/api/schemas.ts` · ~200 changed lines · Expected files: 4 reviewable
+**Scope hint** `apps/server/src/api/issues.ts`, `apps/server/src/api/schemas.ts`, `apps/server/src/app.ts` · ~200 changed lines · Expected files: 5 reviewable
 
 ### Fetch issue details lazily and sanitize them
 
@@ -1148,19 +1177,19 @@ depends: [M6.2, M5.3]
 
 **Summary** The detail opens as a right-side Drawer over the list (row click or `Enter`) and as the route `/i/:owner/:repo/:number`, showing every FR-40 field, the dependency lists, and the sanitized body and comments in a `markdown-body` container.
 
-**Design references** FR-14, FR-23, FR-24, FR-39, FR-40, FR-41, FR-42, FR-43, FR-44, SPEC §10 (keyboard, times), §10.1 (Detail side panel, Detail sections), §7.1 (`github-markdown-css`), D-20, the `coss` skill (`references/primitives/drawer.md`)
+**Design references** FR-14, FR-23, FR-24, FR-39, FR-40, FR-41, FR-42, FR-43, FR-44, SPEC §9.3, §10 (keyboard, times), §10.1 (Detail side panel, Detail sections, Loading states), §7.1 (`github-markdown-css`), D-20, D-22, the `coss` skill (`references/primitives/drawer.md`)
 
 **Current state** list rows link only to GitHub; the shared time component exists in `apps/web/src/lib/`.
 
 **Acceptance criteria**
-- [ ] clicking a row or pressing `Enter` opens the detail in a Drawer from the right; `Esc` closes it; `/i/:owner/:repo/:number` shows the same view full-page
+- [ ] clicking a row or pressing `Enter` opens the detail in a non-modal Drawer from the right (D-22): the list stays usable behind it and `j`/`k` move the selection and update the panel; `Esc` closes it; `/i/:owner/:repo/:number` shows the same view full-page; if the coss Drawer cannot be non-modal, stop and raise a SPEC §14 question
 - [ ] shows title, state, `owner/repo#number`, author, created and updated (shared time component), type, milestone, labels, assignees, parent issue, sub-issues with state, blocked-by and blocking lists, body and comments (oldest first) with author Avatar and time, in Collapsible sections with Separators
 - [ ] dependency entries show `owner/repo#N`, title and state; closed ones are struck through; synced ones open their detail, others GitHub; a list ends with "+N not accessible" without a link when N > 0
 - [ ] the panel shows the summary immediately and the body when it arrives; "N earlier comments on GitHub" precedes comments when there are more than 100; "+N more on GitHub" follows 50 sub-issues
-- [ ] bodies render inside `markdown-body` styled with `github-markdown-css` in light and dark; only HTML from the details route is injected
+- [ ] bodies render inside `markdown-body` styled with `github-markdown-css` in light and dark; that component is the only place the SPA injects HTML, enforced by a lint rule (`react/no-danger` with that one exception), and it only receives HTML from the details route
 - [ ] an "Open on GitHub" Button; every referenced issue, user, label and repo links to GitHub
-- [ ] loading (Skeleton), error (Alert with retry, and the `503` reset time when present) and stale states (component tests)
-- [ ] the fake GitHub gains a details fixture; a Playwright test opens an issue's detail, run by `pnpm --filter ./e2e test` in `ci.yml`
+- [ ] loading (Skeleton for the summary, Spinner while the body loads), error (Alert with retry, and the `503` reset time when present) and stale states (component tests)
+- [ ] the fake GitHub gains a details fixture; a Playwright test opens an issue's detail, added to `e2e/` and run by the `ci.yml` end-to-end job
 - [ ] Reachable via: `apps/web/src/router.tsx` → `apps/web/src/routes/issue.tsx`, and the list's row click
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -1273,7 +1302,7 @@ depends: [M7.1, M5.1]
 
 **Out of scope** Rendering (owned by "Show a board's columns and cards").
 
-**Scope hint** `apps/server/src/boards/`, `apps/server/src/api/boards.ts` · ~380 changed lines · Expected files: 6 reviewable
+**Scope hint** `apps/server/src/boards/`, `apps/server/src/api/boards.ts`, `apps/server/src/app.ts` · ~380 changed lines · Expected files: 7 reviewable
 
 ### Edit boards in a form
 
@@ -1293,7 +1322,7 @@ depends: [M7.1, M5.5]
 **Acceptance criteria**
 - [ ] the form uses Form, Field, Fieldset, Input, Select and Switch and edits every board field; columns can be added, removed, renamed, have their filter edited and be moved up or down with Buttons (no drag and drop)
 - [ ] filters are validated with `packages/query` as the user types; an invalid filter blocks saving and shows the parse error at its column's Field
-- [ ] saving creates or updates the board and opens it; deleting asks in an Alert Dialog, removes the board and returns to `/`
+- [ ] saving creates or updates the board and navigates to `/b/:boardId` (that route arrives with the board view); deleting asks in an Alert Dialog, removes the board and returns to `/`
 - [ ] the switcher Menu lists the user's boards next to saved views
 - [ ] loading, error and not-found states (component tests)
 - [ ] Reachable via: `apps/web/src/router.tsx` → `apps/web/src/routes/board-edit.tsx` for `/b/new` and `/b/:boardId/edit`, and the switcher
@@ -1324,9 +1353,9 @@ depends: [M7.2, M7.3, M6.3, M5.4]
 - [ ] in collapsed mode a parent card has a Collapsible toggle with `completed/total`; nested cards show their own column name as a Badge and can themselves expand; the per-card state is kept in `localStorage` under `crossboard:board:<boardId>:expanded` and cards start collapsed when storage is unavailable
 - [ ] a column renders at most 200 cards, then a "Show N more" Button
 - [ ] the filter bar narrows the board through `?q=` without changing it; `/` focuses it and `Esc` closes the Drawer
-- [ ] a repo picker (Combobox, multi-select) next to the filter bar searches the user's repos through `GET /api/suggest?field=repo` and sets the one top-level `repo:` term of `?q=` (`repo:o/a,o/b`); with nothing picked the term is removed and all repos show; a `repo:` term typed into the filter shows as picked (component test)
+- [ ] a repo picker (Combobox, multi-select, with `filter={null}` and picked items kept when results change) next to the filter bar searches the user's repos through `GET /api/suggest?field=repo` and sets the one top-level `repo:` term of `?q=` (`repo:o/a,o/b`); with nothing picked the term is removed and all repos show; a `repo:` term typed into the filter shows as picked (component test)
 - [ ] loading, empty, error and not-found states; component tests for "Show N more" and the storage fallback
-- [ ] a Playwright test creates a board and sees an issue placed in the expected column, run by `pnpm --filter ./e2e test` in `ci.yml`
+- [ ] a Playwright test creates a board and sees an issue placed in the expected column, added to `e2e/` and run by the `ci.yml` end-to-end job
 - [ ] Reachable via: `apps/web/src/router.tsx` → `apps/web/src/routes/board.tsx`
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -1352,7 +1381,7 @@ depends: [M7.3]
 **Acceptance criteria**
 - [ ] export returns `{ "crossboard": "board", "version": 1, "name", "baseFilter", "sort", "subIssueMode", "showOther", "columns": [{ "name", "filter" }] }`; another user's board answers `404`
 - [ ] import accepts at most 256 KB, validates shape, enums, limits and every filter, and answers `400` naming the first problem (including any `version` other than 1); it always creates a new board and never overwrites; a duplicate name is allowed
-- [ ] the board edit page offers an export Button (download) and the switcher offers import (file picker); import errors show as a Toast
+- [ ] the board edit page offers an export Button (download) and the switcher offers import through a Button and a file Input; import errors show as a Toast
 - [ ] an export imported again yields an equal board (integration test)
 - [ ] Reachable via: `apps/server/src/app.ts` mounts both routes; the buttons in the SPA
 - [ ] the checks of workflow.json for the touched paths pass
@@ -1399,14 +1428,14 @@ depends: [M2.1, M2.7, M2.4]
 
 **Acceptance criteria**
 - [ ] `X-Hub-Signature-256` is checked with a constant-time compare against the webhook secret (env or stored) before the body is parsed; a missing or invalid signature answers `401` with no job enqueued and no DB write (tests: tampered body, missing header, wrong secret)
-- [ ] a valid delivery answers `202` and is enqueued by event name; deliveries for inactive installations are acknowledged and dropped, except the `installation` events that may change the active set
+- [ ] a valid delivery answers `202` and is enqueued by event name through the handler registry `apps/server/src/webhooks/handlers/index.ts`; deliveries for inactive installations are acknowledged and dropped, except the `installation` events that may change the active set
 - [ ] the route is exempt from session and CSRF checks; payload bodies are never logged for private repos and only at `debug` for public ones; handlers receive the parsed payload and log only event, action and ids
 - [ ] Reachable via: `apps/server/src/app.ts` mounts `POST /webhooks/github`
 - [ ] the checks of workflow.json for the touched paths pass
 
 **Out of scope** Applying issue events (owned by "Apply issue, sub-issue, dependency, comment and label webhooks"); installation events (owned by "Apply installation, repository and authorization webhooks").
 
-**Scope hint** `apps/server/src/webhooks/`, `apps/server/src/app.ts` · ~250 changed lines · Expected files: 6 reviewable
+**Scope hint** `apps/server/src/webhooks/`, `apps/server/src/webhooks/handlers/index.ts`, `apps/server/src/app.ts` · ~250 changed lines · Expected files: 6 reviewable
 
 ### Apply issue, sub-issue, dependency, comment and label webhooks
 
@@ -1414,18 +1443,17 @@ depends: [M2.1, M2.7, M2.4]
 id: M8.2
 parent: M8
 labels: [feat, area:sync, safety-critical]
-depends: [M8.1, M3.6, M3.2]
+depends: [M8.1, M3.8, M3.2]
 ```
 
 **Summary** Handle `issues`, `sub_issues`, `issue_dependencies`, `issue_comment` and `label` deliveries: removals apply directly, everything else enqueues a debounced GraphQL refetch of the affected issues, following the SPEC §8.2 removal rules.
 
 **Design references** SPEC §6.2, §8.2, D-11, §5.5 (payload fields never read; transfers as delete plus new), FR-42, CLAUDE.md `### Risk review` (webhooks)
 
-**Current state** the sync stores whole repos; no single-issue refetch exists; the webhook route enqueues deliveries by event name.
+**Current state** the removal and single-issue refetch functions exist in `apps/server/src/sync/remove.ts` and `refetch.ts`; the webhook route enqueues deliveries by event name to `apps/server/src/webhooks/handlers/index.ts`.
 
 **Acceptance criteria**
-- [ ] a single-issue refetch by node id with the SPEC §5.3 selection updates the issue, its labels, assignees, refs and edges
-- [ ] `issues` `closed`: the issue is removed and its ref becomes `CLOSED`, keeping edges where it blocks; `deleted`, `transferred`, and a refetch that finds the issue no longer readable: the ref and every edge mentioning it are deleted and every synced issue on the other side is refetched; a refetch that finds it closed follows the `closed` rule
+- [ ] `issues` `closed` removes the issue as closed; `deleted` and `transferred` remove it as gone, through the existing removal function
 - [ ] `issues` with any other action refetches the issue; `sub_issues` refetches parent and sub-issue; `issue_dependencies` refetches the blocked and the blocking issue; payload fields are never read
 - [ ] `issue_comment` drops the issue's cached details
 - [ ] `label` `edited` updates and `deleted` removes that label in the repo; other `label` actions do nothing
@@ -1436,7 +1464,7 @@ depends: [M8.1, M3.6, M3.2]
 
 **Out of scope** Signature checks and payload logging (owned by "Verify and acknowledge GitHub webhook deliveries"); repository and installation events (owned by "Apply installation, repository and authorization webhooks").
 
-**Scope hint** `apps/server/src/webhooks/handlers/`, `apps/server/src/sync/refetch.ts`, `apps/server/src/github/queries/` · ~380 changed lines (excluding fixtures) · Expected files: 9 reviewable
+**Scope hint** `apps/server/src/webhooks/handlers/`, `apps/server/src/webhooks/handlers/index.ts` · ~280 changed lines (excluding fixtures) · Expected files: 7 reviewable
 
 ### Apply installation, repository and authorization webhooks
 
@@ -1444,7 +1472,7 @@ depends: [M8.1, M3.6, M3.2]
 id: M8.3
 parent: M8
 labels: [feat, area:sync, area:auth, area:db, safety-critical]
-depends: [M8.1, M3.4]
+depends: [M8.1, M3.4, M3.2, M8.4]
 ```
 
 **Summary** Handle `installation`, `installation_repositories`, `repository` and `github_app_authorization` deliveries by calling the existing discovery, purge and access functions, setting an installation's suspended flag, and revoking a user's tokens and sessions.
@@ -1467,7 +1495,7 @@ depends: [M8.1, M3.4]
 
 **Out of scope** Skipping jobs of a suspended installation (owned by "Pause background sync for suspended or low-budget installations"); issue-level events (owned by "Apply issue, sub-issue, dependency, comment and label webhooks").
 
-**Scope hint** `apps/server/src/webhooks/handlers/`, `apps/server/src/access/`, `apps/server/src/sync/discovery.ts` · ~350 changed lines (excluding fixtures) · Expected files: 8 reviewable
+**Scope hint** `apps/server/src/webhooks/handlers/`, `apps/server/src/webhooks/handlers/index.ts`, `apps/server/src/access/`, `apps/server/src/sync/discovery.ts` · ~350 changed lines (excluding fixtures) · Expected files: 8 reviewable
 
 ### Reconcile ready repositories by polling with ETags
 
@@ -1482,7 +1510,7 @@ depends: [M8.2]
 
 **Design references** SPEC §6.3, FR-51, §7.5 (`CROSSBOARD_RECONCILE_INTERVAL_MIN`), §8.1 (`reconcile_since`, `rest_etag`, `last_reconciled_at`)
 
-**Current state** single-issue refetch and removal exist in `apps/server/src/sync/refetch.ts`.
+**Current state** batch refetch and removal exist in `apps/server/src/sync/refetch.ts` and `remove.ts`.
 
 **Acceptance criteria**
 - [ ] every `CROSSBOARD_RECONCILE_INTERVAL_MIN` minutes each ready repo is polled with `GET /repos/{o}/{r}/issues?state=all&since=<reconcile_since>&sort=updated&direction=asc&per_page=100`, following pagination
@@ -1503,7 +1531,7 @@ depends: [M8.2]
 id: M8.5
 parent: M8
 labels: [feat, area:sync]
-depends: [M8.2]
+depends: [M3.8]
 ```
 
 **Summary** Re-run the initial sync once every 24 hours per repo, staggered, and delete `issue_refs` rows no longer referenced by any issue or dependency.
@@ -1514,7 +1542,7 @@ depends: [M8.2]
 
 **Acceptance criteria**
 - [ ] each ready repo is fully resynced once every 24 hours, with start times spread over the day rather than all at once
-- [ ] the resync prunes issues deleted or transferred without a webhook, and picks up relation changes that did not change `updatedAt`
+- [ ] the resync removes issues deleted, transferred or closed without a webhook through the existing removal function, and picks up relation changes that did not change `updatedAt`
 - [ ] after a resync, `issue_refs` rows referenced by no issue parent and no `issue_deps` row are deleted
 - [ ] Reachable via: `apps/server/src/index.ts` schedules the daily resync
 - [ ] the checks of workflow.json for the touched paths pass
@@ -1528,19 +1556,19 @@ depends: [M8.2]
 ```meta
 id: M8.6
 parent: M8
-labels: [feat, area:sync]
-depends: [M8.3, M8.4, M8.5]
+labels: [feat, area:sync, area:server]
+depends: [M8.3, M8.5]
 ```
 
 **Summary** Background jobs (discovery, sync, reconciliation, resync, refetches) never run for a suspended installation, and wait until the reset for an installation below 10% of its budget, while interactive detail fetches continue until 2%.
 
 **Design references** SPEC §6.2 (`suspend`/`unsuspend`), §6.5, §6.1, FR-42
 
-**Current state** jobs are marked background or interactive; the client tracks each installation's budget; the `suspended` flag is set by webhooks; nothing acts on either.
+**Current state** jobs are marked background or interactive; the client tracks each installation's budget; the `suspended` flag is set and cleared by webhooks, and `unsuspend` enqueues a reconciliation; nothing acts on the flag or the budget.
 
 **Acceptance criteria**
 - [ ] the rule lives in `apps/server/src/jobs/` and applies to every job marked background, whatever item added it
-- [ ] a background job for a suspended installation is dropped; `unsuspend` re-enqueues work through the reconciliation its handler already enqueues
+- [ ] a background job for a suspended installation is dropped; work resumes through the reconciliation that `unsuspend` already enqueues
 - [ ] a background job for an installation below 10% remaining is deferred until that installation's reset time, then runs
 - [ ] interactive detail fetches are not paused by this rule and keep their 2% cut-off
 - [ ] a pause, a drop and a resume are logged at `info` with installation and reason
@@ -1558,7 +1586,7 @@ depends: [M8.3, M8.4, M8.5]
 id: M8.7
 parent: M8
 labels: [feat, area:server, area:web]
-depends: [M8.4]
+depends: [M8.4, M5.2, M2.8]
 ```
 
 **Summary** Add `GET /api/sync` and `POST /api/sync/refresh`, the top bar's "Synced <time>" with a Refresh button, and per-repo sync state and per-installation budget on the settings page.
@@ -1570,7 +1598,7 @@ depends: [M8.4]
 **Acceptance criteria**
 - [ ] `GET /api/sync` returns, for the session user's accessible repos only, each repo's state (`pending`, `syncing`, `ready`, `error` with message, `skipped` with reason) and last synced time, plus each active installation's remaining budget and reset time ("unknown" until the first call after a restart)
 - [ ] the top bar shows "Synced <time>" with the shared time component, the oldest `last_synced_at` (the later of last full sync and last reconciliation) among the user's ready repos
-- [ ] the Refresh Button calls `POST /api/sync/refresh`, which enqueues a reconciliation of the user's accessible repos at most once per 60 s per user (tracked in memory) and answers `429` with the remaining seconds otherwise, shown as a Toast
+- [ ] the Refresh Button (Tooltip with the absolute time, Spinner while the request runs) calls `POST /api/sync/refresh`, which enqueues a reconciliation of the user's accessible repos at most once per 60 s per user (tracked in memory) and answers `429` with the remaining seconds otherwise, shown as a Toast
 - [ ] `/settings` shows per-repo state Badges in a Table and per-installation budgets in Cards, with loading, empty and error states (component tests)
 - [ ] a second user never sees another user's repos in `GET /api/sync` (integration test)
 - [ ] Reachable via: `apps/server/src/app.ts` mounts the sync routes; the top bar and `apps/web/src/routes/settings.tsx`
@@ -1631,14 +1659,14 @@ depends: [M6.4, M7.4, M8.7]
 id: M9.2
 parent: M9
 labels: [chore, area:ci, safety-critical]
-depends: [M1.6, M8.7]
+depends: [M2.9]
 ```
 
 **Summary** Add `.github/workflows/release.yml`, which on a pushed `v*.*.*` tag builds the image for `linux/amd64` and `linux/arm64` and pushes `:<version>` and `:latest` to `ghcr.io/mdg-labs/crossboard` (D-16), and set the workspace version to 0.1.0.
 
 **Design references** D-16, D-5, SPEC §7.1 (packaging), §7.6 (CI), `.claude/workflow.json` `act.neverRun`
 
-**Current state** `ci.yml` builds the image and runs the end-to-end tests without publishing anything.
+**Current state** `ci.yml` runs the gate, builds the image and runs the end-to-end tests without publishing anything.
 
 **Acceptance criteria**
 - [ ] `release.yml` triggers only on tags matching `v*.*.*` and runs on `[self-hosted, runners01]`

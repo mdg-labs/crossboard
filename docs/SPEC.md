@@ -296,6 +296,7 @@ apps/server/            @crossboard/server
   src/access/           allowlist, access computation, scoping helpers
   src/api/              route modules: issues, boards, views, suggest, sync, me
   src/boards/           placement and sub-issue nesting (pure functions)
+  src/issues/           loading the session user's accessible issues and mapping them to FilterableIssue
   src/webhooks/         route and event handlers
   src/sync/             initial sync, reconciliation, refetch
   src/jobs/             jobs interface and in-process implementation
@@ -449,12 +450,13 @@ saved_views       id int PK, user_id → users, name, filter, sort, created_at, 
 - Times show relative ("3 h ago") with the absolute time in a tooltip, in the browser's time zone.
 
 ### 10.1 Component map (D-20)
-Every UI element uses the coss ui component named here, from `apps/web/src/components/ui/`. An element this table does not cover is added to §14 before it is built, never styled by hand. The dependency graph (FR-27, hand-written SVG) and the `markdown-body` container (FR-41, `github-markdown-css`) are the only hand-built UI.
+Every UI element uses the coss ui component named here, from `apps/web/src/components/ui/`. An element this table does not cover is added to §14 before it is built, never styled by hand. The only hand-built UI is the dependency graph (FR-27, hand-written SVG), the `markdown-body` container (FR-41, `github-markdown-css`) and the filter's error highlight layer (FR-18, D-22).
 
 | UI element | coss ui component |
 |---|---|
 | Top bar (§10 layout) | Toolbar, Group |
-| Filter input with autocomplete and error underline (FR-18, FR-20) | Autocomplete, Input Group |
+| Filter input with autocomplete (FR-20) | Autocomplete, Input Group |
+| Filter error underline (FR-18) | hand-built text layer mirrored behind the Input Group (D-22) |
 | Filter warnings (FR-17) | Alert |
 | View/board switcher, saved views (FR-22) | Menu |
 | Sort control (FR-13, FR-28) | Select |
@@ -467,7 +469,7 @@ Every UI element uses the coss ui component named here, from `apps/web/src/compo
 | Loading states (FR-16, every view) | Skeleton, Spinner |
 | Empty states (FR-16, every view) | Empty |
 | Error states with retry, "not allowed" page (FR-2) | Alert, Button, Empty |
-| Detail side panel (FR-39) | Drawer |
+| Detail side panel (FR-39) | Drawer, non-modal: the list or board behind it stays usable (D-22) |
 | Detail sections: sub-issues, relations, comments (FR-40, FR-43) | Collapsible, Separator, Avatar |
 | Board columns and cards (FR-32) | Card, Scroll Area |
 | Board repo picker (FR-34) | Combobox |
@@ -531,6 +533,7 @@ M4 depends only on M1 and can run in parallel with M2 and M3.
 - **D-19 Setup token route:** the setup token is submitted to `POST /api/setup/token` (§7.4). (2026-10-18)
 - **D-20 UI components:** the web app is composed from coss ui (Base UI and Tailwind CSS 4), added with the shadcn CLI into `apps/web/src/components/ui/` and treated as vendored code; it replaces the Radix UI primitives. Each UI element uses the component the §10.1 map names; the frontend is not designed by hand. Inter and Geist Mono are bundled from npm font packages, never loaded from a CDN; Base UI's inline style elements are disabled so the CSP of §9.3 stays unchanged. Agents use the `coss` skill (`.agents/skills/coss`). (2026-10-18)
 - **D-21 Board repo picker:** boards get a repo picker that edits the ad-hoc filter's `repo:` term, defaulting to all repos (FR-34); it is not saved with the board, since a board's base filter can already hold `repo:` terms. (2026-10-18)
+- **D-22 Detail panel and filter error:** the detail Drawer is non-modal, so `j`/`k`, `/` and clicks keep working on the list or board behind it; if coss's Drawer cannot be non-modal, that is a §14 question, not a hand-built panel. The filter's error range (FR-18) is underlined by a text layer mirrored behind the Input Group, the third hand-built UI element. (2026-10-18)
 
 ## 14. Open questions
 None. New questions are added here with a recommended default and resolved into §13.
