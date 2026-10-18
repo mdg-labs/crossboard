@@ -31,13 +31,23 @@ Re-running is safe: every issue carries a `<!-- roadmap:ID -->` marker, so an
 interrupted run resumes where it stopped and never duplicates.
 
 GitHub calls go through .claude/scripts/gh-rest.sh and issue-status.sh, with
-two exceptions:
+these exceptions:
 - Creating a milestone is a direct `gh api` POST, because gh-rest.sh has no
   milestone subcommand. It is scoped to workflow.json's repo explicitly.
+- After a primary rate-limit error, `gh api rate_limit` (a free read) gives the
+  reset time to wait for; gh-rest.sh does not pass response headers through,
+  so `retry-after` is not available.
 - The `maintainer-only` label is never applied: gh-rest.sh refuses it by
   design, since only the maintainer applies it. Those issues are filed
   without it, left at status:new, and the script prints the command for the
   maintainer to add the label.
+
+Rate limits: a full apply makes about 270 writes, well inside GitHub's hourly
+limits. Writes are paced at least WRITE_GAP seconds apart (GitHub asks for one
+second between mutating requests and allows 80 content-creating requests a
+minute), so the secondary limit is not hit in the first place. If a limit is
+hit anyway, the primary one is waited out until its reset, and a secondary one
+backs off from 60 s upwards.
 
 Exit codes: 0 ok, 1 validation failed, 2 a GitHub call failed.
 """
@@ -484,16 +494,44 @@ RETRYABLE = re.compile(r"rate limit|secondary|abuse|HTTP 429|HTTP 5\d\d|timeout|
                        r"|connection|reset by peer|EOF", re.I)
 
 
-def run(args: list[str], what: str, retry: bool = True) -> str:
+WRITE_GAP = 1.2  # seconds between writes: under 60 a minute, above GitHub's 1 s floor
+_last_write = 0.0
+
+
+def pace_write() -> None:
+    global _last_write
+    gap = time.monotonic() - _last_write
+    if gap < WRITE_GAP:
+        time.sleep(WRITE_GAP - gap)
+    _last_write = time.monotonic()
+
+
+def limit_wait(err: str, attempt: int) -> int:
+    """Seconds to wait before retrying a failed call."""
+    if re.search(r"API rate limit exceeded", err, re.I):
+        # Primary limit: wait for the reset GitHub reports (a free read).
+        proc = subprocess.run(["gh", "api", "rate_limit", "--jq", ".resources.core.reset"],
+                              capture_output=True, text=True, cwd=ROOT)
+        if proc.returncode == 0 and proc.stdout.strip().isdigit():
+            return max(5, min(int(proc.stdout) - int(time.time()) + 5, 3700))
+        return 900
+    if re.search(r"secondary|abuse|HTTP 429", err, re.I):
+        return min(60 * 2 ** attempt, 900)
+    return min(30 * 2 ** attempt, 600)
+
+
+def run(args: list[str], what: str, retry: bool = True, write: bool = False) -> str:
     """Run a command, retrying rate limits and transient failures unless
-    `retry` is off (for calls that are not idempotent)."""
+    `retry` is off (for calls that are not idempotent). A write is paced."""
     for attempt in range(10):
+        if write:
+            pace_write()
         proc = subprocess.run(args, capture_output=True, text=True, cwd=ROOT)
         if proc.returncode == 0:
             return proc.stdout
         err = (proc.stderr + proc.stdout).strip()
         if retry and RETRYABLE.search(err) and attempt < 9:
-            wait = min(30 * 2 ** attempt, 600)
+            wait = limit_wait(err, attempt)
             print(f"  {what}: GitHub asked us to slow down; waiting {wait}s (attempt {attempt + 1})", flush=True)
             time.sleep(wait)
             continue
@@ -501,8 +539,8 @@ def run(args: list[str], what: str, retry: bool = True) -> str:
     raise GhError(f"{what}: gave up after retries")
 
 
-def gh_rest(*args: str, retry: bool = True) -> object:
-    out = run([str(GH_REST), *args], f"gh-rest.sh {args[0]}", retry=retry)
+def gh_rest(*args: str, retry: bool = True, write: bool = False) -> object:
+    out = run([str(GH_REST), *args], f"gh-rest.sh {args[0]}", retry=retry, write=write)
     return json.loads(out) if out.strip() else None
 
 
@@ -519,12 +557,12 @@ def create_issue(ident: str, cmd: list[str]) -> dict:
     the issue is looked up by its roadmap marker."""
     for attempt in range(6):
         try:
-            return gh_rest(*cmd, retry=False)  # type: ignore[return-value]
+            return gh_rest(*cmd, retry=False, write=True)  # type: ignore[return-value]
         except GhError as exc:
             # A plain rejection (validation, permission) never wrote anything.
             if attempt == 5 or not RETRYABLE.search(str(exc)):
                 raise
-            wait = min(30 * 2 ** attempt, 600)
+            wait = limit_wait(str(exc), attempt)
             print(f"  create {ident} failed; checking whether it landed, then retrying in {wait}s", flush=True)
             time.sleep(wait)
             found = find_by_marker(ident)
@@ -538,14 +576,14 @@ def create_milestone(title: str) -> None:
     # a write that landed gets "already_exists", which is success here.
     try:
         run(["gh", "api", "--method", "POST", f"repos/{REPO}/milestones", "-f", f"title={title}"],
-            f"create milestone '{title}'")
+            f"create milestone '{title}'", write=True)
     except GhError as exc:
         if "already_exists" not in str(exc):
             raise
 
 
 def set_status(n: int, status: str) -> None:
-    run([str(ISSUE_STATUS), str(n), status], f"issue-status.sh {n} {status}")
+    run([str(ISSUE_STATUS), str(n), status], f"issue-status.sh {n} {status}", write=True)
 
 
 # --------------------------------------------------------------------------
@@ -563,6 +601,10 @@ def main() -> int:
     ap.add_argument("--keep", action="store_true", help="do not delete the roadmap after a full apply")
     args = ap.parse_args()
 
+    if not args.roadmap.is_file():
+        print(f"{args.roadmap} does not exist. After a full apply it is deleted; to run again, restore it from git:\n"
+              f"  git show <commit>:docs/roadmap.md > <file> && {Path(sys.argv[0]).name} --roadmap <file> --keep …")
+        return 1
     milestones, entries = parse(args.roadmap.read_text())
     by_id = {e.ident: e for e in entries}
     problems = validate(milestones, entries, args.roadmap)
@@ -684,7 +726,6 @@ def main() -> int:
                 issue = create_issue(e.ident, cmd)
                 existing[e.ident] = issue
                 print(f"  {'epic' if e.kind == 'epic' else 'leaf'} #{issue['number']:<5} {e.ident:<8} {e.title}")  # type: ignore[index]
-                time.sleep(1.0)
 
         num = {i: existing[i]["number"] for i in wanted}
 
@@ -703,9 +744,8 @@ def main() -> int:
             if cur:
                 conflicts.append(f"{e.ident}: #{num[e.ident]} already has parent #{cur.get('number')}, want #{want}")  # type: ignore[union-attr]
                 continue
-            gh_rest("add-sub-issue", str(want), str(num[e.ident]))
+            gh_rest("add-sub-issue", str(want), str(num[e.ident]), write=True)
             linked += 1
-            time.sleep(0.5)
 
         # 3. Blocked-by links.
         for e in selected:
@@ -715,9 +755,8 @@ def main() -> int:
             have = {d["number"] for d in gh_rest("blocked-by", str(num[e.ident])) or []}  # type: ignore[union-attr]
             for dep in deps:
                 if existing[dep]["number"] not in have:
-                    gh_rest("add-blocked-by", str(num[e.ident]), str(existing[dep]["number"]))
+                    gh_rest("add-blocked-by", str(num[e.ident]), str(existing[dep]["number"]), write=True)
                     linked += 1
-                    time.sleep(0.5)
 
         # 4. Verify the wiring before anything is marked ready.
         after: list[str] = list(conflicts)
