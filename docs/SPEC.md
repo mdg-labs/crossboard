@@ -102,7 +102,7 @@ GitHub-compatible subset, parsed and evaluated **locally** against the cache (no
 - **FR-23** Cards show: repo, `#number`, title, labels, assignee avatars, type, blocked badge, sub-issue progress.
 - **FR-24** Within a column, cards are sorted by a board-level sort (default: updated desc). No manual ordering in v1 (no writes, no local rank).
 - **FR-25** Boards can additionally be narrowed by an ad-hoc filter bar without changing the saved board.
-- **FR-26** Boards are stored in Crossboard's DB, per user. Export/import as JSON.
+- **FR-26** Boards are stored in Crossboard's DB and are **strictly personal**: only their owner can see or edit them. Export/import as JSON.
 - **FR-27** No drag & drop in v1 (it would imply a write). See §12.
 
 ### 4.6 Detail view
@@ -259,7 +259,7 @@ Issue data is stored **once per repo** (not per user) and access is gated via `u
 | M6 | Detail view | Lazy body/comments, sanitized, deep links, dependency lists |
 | M7 | Boards | CRUD, column filters, placement rules, collapsed/expanded sub-issues |
 | M8 | Freshness | Webhooks applied, polling reconciliation with ETags, rate-limit guardrails, sync status UI |
-| M9 | Release prep | README with self-host guide, LICENSE, screenshots, v0.1.0 tag |
+| M9 | Release prep | README with self-host guide, screenshots, v0.1.0 tag |
 
 ## 12. Future (v2+) candidates
 - **Writes:** drag & drop between label-based columns changes labels (remove the source column's label, add the target's), close/reopen issues. Requires **Issues: write** and a clear rule for columns defined by complex filters (only columns with a single `label:` qualifier become drop targets).
@@ -267,8 +267,11 @@ Issue data is stored **once per repo** (not per user) and access is gated via `u
 - Dependency graph view across a whole board.
 - Hosted cloud version (§9.2).
 - GitHub Projects fields as columns.
+- Sharing boards between users of the same instance.
 
-## 13. Open questions
-1. License for the open-source release (proposed: MIT, or AGPL-3.0 if a hosted cloud version should be protected).
-2. Should boards be shareable between users of the same instance in v1, or strictly personal?
-3. Should closed issues be syncable later (e.g. "closed in last 14 days" column)?
+## 13. Decisions
+- **License:** MIT (decided 2026-10-18). See `LICENSE`.
+- **Board visibility:** boards and saved views are strictly personal in v1; sharing between users of the same instance is a later candidate (decided 2026-10-18).
+
+## 14. Open questions
+1. Should closed issues be syncable later (e.g. "closed in last 14 days" column)?
