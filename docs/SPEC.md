@@ -202,7 +202,7 @@ When a connection's `totalCount` exceeds the page, follow-up queries page that c
 GitHub returns issue-type colors as an enum. The web app maps them to fixed hex values (Primer): `GRAY #6e7781`, `BLUE #0969da`, `GREEN #1a7f37`, `YELLOW #9a6700`, `ORANGE #bc4c00`, `RED #d1242f`, `PINK #bf3989`, `PURPLE #8250df`. An unknown value renders as GRAY. Issue types are an organization feature; issues in personal repos have no type and show none.
 
 ### 5.5 GitHub behaviour to confirm before building on it
-These are not stated by GitHub's documentation. The first item of M3 is a spike, done by the maintainer because it needs a real installation, that checks each against real deliveries and queries and records the results in this section. It does not block other work: until a row is confirmed, the implementation uses its fallback.
+These are not stated by GitHub's documentation. Early in M3, once the maintainer's instance exists (D-15), the maintainer runs a spike (it needs a real installation) that checks each against real deliveries and queries and records the results in this section. It does not block other work: until a row is confirmed, the implementation uses its fallback.
 
 | Behaviour | Fallback until confirmed |
 |---|---|
@@ -323,7 +323,7 @@ All `/api/*` routes except `/api/health` and `/api/setup/*` (setup cookie instea
 |---|---|
 | `GET /api/health` | `{ status: "ok", version }`; no auth |
 | `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` | Sign-in flow (FR-4–FR-6) |
-| `GET /setup`, `POST /api/setup/manifest`, `GET /setup/callback` | First-run setup (FR-47–FR-49); setup token required |
+| `GET /setup`, `POST /api/setup/token`, `POST /api/setup/manifest`, `GET /setup/callback` | First-run setup (FR-47–FR-49). `POST /api/setup/token` takes `{ token }` and sets the setup cookie (`401` on a wrong token); the other setup routes require that cookie (D-19) |
 | `GET /api/me` | Session user, installations with active flag, install URL |
 | `GET /api/issues?q=&sort=&offset=&limit=` | Filtered list: `{ items, total, warnings }`; `limit` ≤ 200, default 100 |
 | `GET /api/issues/:owner/:repo/:number` | Summary with relations (parent, dependencies with states, sub-issue summary) |
@@ -489,6 +489,11 @@ M4 depends only on M1 and can run in parallel with M2 and M3.
 - **D-12 Daily full resync** per repo as the safety net for missed deletions and relation changes (§6.3). (2026-10-18)
 - **D-13 Scope of the UI:** English only, desktop-first (≥ 1024 px), no reactions. (2026-10-18)
 - **D-14 github.com only;** GitHub Enterprise Server is not supported in v1. (2026-10-18)
+- **D-15 Maintainer instance from M3:** the first item of M3, done by the maintainer, deploys a private instance with a public URL and registers its App through `/setup`, so the §5.5 spike has a real installation and real webhook deliveries. (2026-10-18)
+- **D-16 Release trigger:** pushing a tag `v*.*.*` runs the release workflow, which builds `linux/amd64` and `linux/arm64` and pushes `ghcr.io/mdg-labs/crossboard:<version>` and `:latest`. (2026-10-18)
+- **D-17 Threat model format:** `docs/THREAT_MODEL.md` follows the threat-model format of the security-audit skill in mdg-labs/skills (`## 1. Assets` to `## 7. Disclosure split`); the M1 item that writes it carries that format in its own text, because the skill is vendored only once the file exists. (2026-10-18)
+- **D-18 Read-only means no change to GitHub data:** the server never sends a GraphQL mutation or a REST call that changes GitHub data. The only non-`GET` calls are GraphQL queries (`POST /graphql`) and the credential exchanges: installation access tokens (`POST /app/installations/{id}/access_tokens`), the manifest conversion (FR-49), and the OAuth code exchange and token refresh (FR-4, FR-7). (2026-10-18)
+- **D-19 Setup token route:** the setup token is submitted to `POST /api/setup/token` (§7.4). (2026-10-18)
 
 ## 14. Open questions
 None. New questions are added here with a recommended default and resolved into §13.

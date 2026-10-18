@@ -43,7 +43,7 @@ A capability is reachable only once it is wired into one of these; an unwired mo
 
 ### Implementation rules
 
-- **Read-only against GitHub in v1.** No mutation calls (REST POST/PATCH/PUT/DELETE to GitHub, GraphQL mutations) anywhere in the server. The App requests only Issues: read and Metadata: read.
+- **Read-only against GitHub in v1 (D-18).** No GraphQL mutation and no REST call that changes GitHub data anywhere in the server. The only non-`GET` calls are GraphQL queries and the credential exchanges D-18 lists (installation tokens, manifest conversion, OAuth code exchange and refresh). The App requests only Issues: read and Metadata: read.
 - **Every GitHub call goes through the central rate-limit-aware client** (SPEC §6.5); nothing calls Octokit directly.
 - **Every API query is scoped by the session user** via `user_repo_access`; issue data is stored once per repo, never "all issues in the DB" (SPEC §9.1).
 - **DB access only through Drizzle**; no SQLite-specific SQL outside the migrations folder. Migrations are generated, never hand-edited after they are committed.
@@ -64,4 +64,4 @@ For `safety-critical` items and `riskPaths` changes, the verifier checks:
 - **HTML:** every path that sends GitHub-rendered HTML to the browser passes through the sanitizer; a test with a script/`on*`-attribute payload proves it is stripped.
 - **Sessions/CSRF:** cookies stay HTTP-only, `SameSite=Lax`, secure; state-changing routes reject a missing or foreign `Origin` header and non-JSON bodies (SPEC §9.3).
 - **Migrations:** apply cleanly on an existing database with data (not only a fresh one) and never drop user-created data (boards, columns, saved views).
-- **No GitHub writes:** the diff adds no mutation call.
+- **No GitHub writes:** the diff adds no GraphQL mutation and no non-`GET` REST call beyond the D-18 credential exchanges.
