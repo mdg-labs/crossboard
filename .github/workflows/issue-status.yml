@@ -1,0 +1,163 @@
+name: Issue status
+
+# The machine-owned end of the status:* lifecycle. Agents own the middle of it
+# (in-progress → in-review → implemented, see .claude/skills/orchestrate);
+# this owns the two ends, where there is no agent in the loop — an issue being
+# filed, and an issue being closed.
+#
+# It also assigns the maintainer to any issue that has no assignee, on the same
+# triggers — no extra event types just for that; ownership is set on issues this
+# job is already awake for. An issue that already has an assignee is never
+# touched.
+#
+# Deliberately NOT triggered on labeled/unlabeled. Every status change is a
+# label change, so that would wake this workflow twice per transition (a PATCH
+# that swaps labels emits both events) — dozens of runs per orchestrate run,
+# all of them finding nothing to do. The one-status invariant doesn't need it:
+# .claude/scripts/issue-status.sh replaces the label set in a single call, so
+# an agent cannot leave two behind in the first place. This job still
+# normalises what it finds whenever it does run, which covers a hand edit at
+# the next open/close.
+
+on:
+  issues:
+    types: [opened, closed, reopened]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-status-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  set-status:
+    runs-on: [self-hosted, runners01]
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const { action } = context.payload;
+            // An organisation cannot be an assignee, so the maintainer is named
+            // explicitly. Rendered by setup from workflow.json "maintainer".
+            const MAINTAINER = 'mdguggenbichler';
+            const issue_number = context.payload.issue.number;
+
+            const TERMINAL = ['status:closed', 'status:cancelled'];
+            const namesOf = issue => issue.labels.map(l => (typeof l === 'string' ? l : l.name));
+            const statusesOf = issue => namesOf(issue).filter(n => n.startsWith('status:'));
+            const read = async () =>
+              (await github.rest.issues.get({ ...context.repo, issue_number })).data;
+            // GitHub answers 404 for a label the issue no longer carries; a
+            // racing writer removing it first is the same outcome.
+            const remove = async name => {
+              try {
+                await github.rest.issues.removeLabel({ ...context.repo, issue_number, name });
+              } catch (err) {
+                if (err.status !== 404) throw err;
+              }
+            };
+
+            // The status this run wants, from a fresh read of the issue, or null
+            // to leave it alone.
+            const decide = (issue, statuses) => {
+              if (action === 'closed') {
+                // GitHub sends 'completed', 'not_planned' or 'duplicate'; anything
+                // else (including null) is an ordinary close, i.e. completed.
+                return ['not_planned', 'duplicate'].includes(issue.state_reason)
+                  ? 'status:cancelled'
+                  : 'status:closed';
+              }
+              if (action === 'reopened') {
+                // A reopen leaves status:closed or status:cancelled behind. Any
+                // other status was set since, by an agent that already claimed
+                // the issue, so it is kept rather than reset to status:new.
+                const kept = statuses.filter(n => !TERMINAL.includes(n));
+                return kept.length ? kept.slice().sort()[0] : 'status:new';
+              }
+              // Opened without one.
+              if (statuses.length === 0) return 'status:new';
+              // Opened carrying several, only reachable by hand. Keep one,
+              // deterministically, rather than leaving the issue ambiguous.
+              if (statuses.length > 1) return statuses.slice().sort()[0];
+              // Opened with exactly one: the filer meant it, leave it alone.
+              return null;
+            };
+
+            // Re-read the issue instead of trusting context.payload.issue. The
+            // payload is a snapshot taken when the event fired; this job starts
+            // seconds later, and in that window an agent that just ran
+            // gh-rest.sh issue-create has typically already called
+            // .claude/scripts/issue-status.sh. Deciding on the snapshot put
+            // status:new over the status the script had just set (seen in
+            // practice: ready reverted to new). The read sits right before the
+            // writes, and the assignment below waits until they are done, so the
+            // window a racing writer can land in stays as small as it can be.
+            const live = await read();
+            const statuses = statusesOf(live);
+            const want = decide(live, statuses);
+
+            if (want === null) {
+              core.info(`#${issue_number}: nothing to do (${statuses.join(', ') || 'no status'})`);
+            } else if (statuses.length === 1 && statuses[0] === want) {
+              core.info(`#${issue_number} is already ${want}`);
+            } else {
+              // Only the status labels that change are written: addLabels for
+              // ours, removeLabel for each one it replaces. Never setLabels,
+              // which replaces the whole set, so writing back a set read
+              // earlier would drop any label added since, status or not. Added
+              // first, so a run that fails midway leaves two statuses (the next
+              // run normalises them), never none. Added even when the read
+              // already showed it: that read can be stale, and addLabels is
+              // idempotent.
+              await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [want] });
+              for (const n of statuses.filter(n => n !== want)) await remove(n);
+
+              // A writer can still land between the read and these writes.
+              // Re-read after them (the point is to see the racing writer's
+              // label if it landed) and, if there are now two statuses, settle
+              // on one: status:new is this job's default for an issue nobody
+              // classified, so a status anyone else set wins over it. closed,
+              // cancelled and a hand-made cleanup are this job's to decide, so
+              // ours wins over theirs.
+              const after = statusesOf(await read());
+              if (after.length === 0) {
+                // A racing writer removed ours after we added it, and we then
+                // removed theirs: put ours back rather than leave none.
+                await github.rest.issues.addLabels({ ...context.repo, issue_number, labels: [want] });
+                core.info(`#${issue_number}: raced to no status → ${want}`);
+              } else if (after.length > 1) {
+                const others = after.filter(n => n !== want).sort();
+                const winner = want === 'status:new' ? others[0] : want;
+                for (const n of after.filter(n => n !== winner)) await remove(n);
+                core.info(`#${issue_number}: raced (${after.join(', ')}) → kept ${winner}`);
+              } else {
+                core.info(`#${issue_number}: ${statuses.join(', ') || 'none'} → ${want}`);
+              }
+            }
+
+            // Assign the maintainer to anything nobody owns yet. This rides on
+            // the triggers the status lifecycle already needs (deliberately no
+            // new event types), so it only fires on an issue this workflow was
+            // touching anyway. Runs after the status write so it cannot widen
+            // the window between that write and the read it is based on.
+            //
+            // Never touches an issue that already has an assignee, and skipped
+            // on close: putting a fresh assignee (and its notification) on an
+            // issue that just went away is noise, not ownership.
+            //
+            // Best-effort by design. addAssignees silently ignores a login
+            // without push access, and any failure here must not fail the job
+            // whose real purpose, the status write, already succeeded.
+            if (action !== 'closed' && (live.assignees || []).length === 0) {
+              try {
+                await github.rest.issues.addAssignees({
+                  ...context.repo,
+                  issue_number,
+                  assignees: [MAINTAINER],
+                });
+                core.info(`#${issue_number}: unassigned → @${MAINTAINER}`);
+              } catch (err) {
+                core.warning(`#${issue_number}: could not assign @${MAINTAINER}: ${err.message}`);
+              }
+            }

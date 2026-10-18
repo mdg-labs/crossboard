@@ -1,0 +1,31 @@
+# CodeRabbit config for this repo, written by mdg-setup.
+#
+# The shared settings live in the org-wide central config, .coderabbit.yaml
+# in mdg-labs/coderabbit. This file holds only what differs per repo and
+# merges with it: objects deep-merge, and lists keep this file's entries
+# plus the central ones it lacks.
+inheritance: true
+
+reviews:
+  auto_review:
+    # The default branch (PROD) is always reviewed; this list extends it.
+    # Under pr-per-unit, a unit PR stacked on another unit's branch has that
+    # branch as its base, so the unit-branch prefix is listed (a regex).
+    base_branches: []
+
+  # dev-diff.sh counts the files of a promotion against promotionBudget and
+  # reads only THIS file's exclusions, so the central ones are repeated here.
+  # A filter missing here makes the count high and wastes budget. Exclusions
+  # only: an entry without "!" turns the list into an allow-list.
+  path_filters:
+    # Same as the central config:
+    - "!**/.claude/**"
+    - "!**/__snapshots__/**"
+    - "!**/*.snap"
+    - "!**/fixtures/**"
+    - "!**/testdata/**"
+    - "!**/vendor/**"
+    - "!**/CHANGELOG.md"
+    # This repo's own (generated code, recorded evidence, ...):
+    - "!**/.agents/**"  # vendored agent skills (coss)
+    - "!apps/web/src/components/ui/**"  # vendored coss ui components (SPEC D-20)

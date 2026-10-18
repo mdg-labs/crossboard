@@ -1,0 +1,184 @@
+{
+  "$schema": "./workflow.schema.json",
+  "repo": "mdg-labs/crossboard",
+  "maintainer": "mdguggenbichler",
+  "githubRunner": "[self-hosted, runners01]",
+  "tracker": {
+    "type": "github"
+  },
+  "branches": {
+    "integration": "dev",
+    "production": "main"
+  },
+  "landing": "dev-cherry-pick",
+  "promotionBudget": 150,
+  "review": {
+    "reviewers": [
+      "kodus",
+      "coderabbit"
+    ],
+    "kodusConfig": "mdg-labs/kodus-config"
+  },
+  "gate": "if [ -f package.json ]; then pnpm gate; fi",
+  "checks": [
+    {
+      "paths": [
+        "packages/query/**"
+      ],
+      "run": "pnpm --filter ./packages/query lint && pnpm --filter ./packages/query typecheck && pnpm --filter ./packages/query test"
+    },
+    {
+      "paths": [
+        "apps/server/**"
+      ],
+      "run": "pnpm --filter ./apps/server lint && pnpm --filter ./apps/server typecheck && pnpm --filter ./apps/server test"
+    },
+    {
+      "paths": [
+        "apps/web/**"
+      ],
+      "run": "pnpm --filter ./apps/web lint && pnpm --filter ./apps/web typecheck && pnpm --filter ./apps/web test && pnpm --filter ./apps/web build"
+    },
+    {
+      "paths": [
+        "e2e/**"
+      ],
+      "run": "pnpm --filter ./e2e lint && pnpm --filter ./e2e typecheck"
+    },
+    {
+      "paths": [
+        "Dockerfile",
+        "docker-compose*.yml",
+        ".dockerignore"
+      ],
+      "run": "docker build -t crossboard:check .",
+      "requires": [
+        "docker"
+      ]
+    },
+    {
+      "paths": [
+        ".github/workflows/**"
+      ],
+      "run": "actionlint",
+      "requires": [
+        "actionlint"
+      ]
+    },
+    {
+      "paths": [
+        "**/*.sh"
+      ],
+      "run": "shellcheck <changed .sh files>",
+      "requires": [
+        "shellcheck"
+      ]
+    }
+  ],
+  "bootstrap": "if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; fi",
+  "signoff": {
+    "mode": "none"
+  },
+  "models": {
+    "verifier": "auto",
+    "refiner": "auto"
+  },
+  "threatModel": null,
+  "act": {
+    "platforms": {
+      "runners01": "catthehacker/ubuntu:act-24.04",
+      "ubuntu-latest": "catthehacker/ubuntu:act-24.04"
+    },
+    "neverRun": [
+      "deploy*",
+      "publish*",
+      "release*",
+      "image*",
+      "set-status"
+    ],
+    "timeout": 1800
+  },
+  "riskPaths": [
+    "apps/server/src/auth/**",
+    "apps/server/src/webhooks/**",
+    "apps/server/src/security/**",
+    "apps/server/src/access/**",
+    "apps/server/src/db/schema/**",
+    "**/migrations/**",
+    ".github/workflows/**"
+  ],
+  "labels": {
+    "areas": [
+      {
+        "name": "area:server",
+        "color": "1d76db",
+        "description": "HTTP app, API routes, jobs interface, config — apps/server"
+      },
+      {
+        "name": "area:auth",
+        "color": "7057ff",
+        "description": "GitHub App OAuth, setup flow, sessions, token encryption — apps/server/src/auth"
+      },
+      {
+        "name": "area:sync",
+        "color": "0e8a8a",
+        "description": "Sync, webhooks, reconciliation, GitHub client — apps/server/src/{sync,webhooks,github}"
+      },
+      {
+        "name": "area:db",
+        "color": "006b75",
+        "description": "Drizzle schema and migrations, access scoping — apps/server/src/db"
+      },
+      {
+        "name": "area:query",
+        "color": "5ab0e8",
+        "description": "Filter parser and evaluator shared by server and web — packages/query"
+      },
+      {
+        "name": "area:web",
+        "color": "5319e7",
+        "description": "React SPA: list, boards, detail panel; e2e tests — apps/web, e2e"
+      },
+      {
+        "name": "area:ci",
+        "color": "6a737d",
+        "description": "GitHub workflows, Dockerfile, compose, release"
+      },
+      {
+        "name": "area:docs",
+        "color": "a2c4e0",
+        "description": "docs/ — spec, self-host guide, README"
+      }
+    ],
+    "risk": {
+      "name": "safety-critical",
+      "color": "b60205",
+      "description": "Auth, tokens, webhooks, sanitizing, access scoping, migrations: maintainer reads the diff"
+    },
+    "maintainerOnly": {
+      "name": "maintainer-only",
+      "color": "5d4037",
+      "description": "Needs the maintainer: GitHub App registration, Coolify, secrets, DNS"
+    }
+  },
+  "readiness": {
+    "stale": [
+      {
+        "pattern": "Node(\\.js)? ?22",
+        "reason": "the runtime is Node 24 LTS (SPEC D-8)"
+      },
+      {
+        "pattern": "src/query",
+        "reason": "the filter engine lives only in packages/query (SPEC FR-21)"
+      },
+      {
+        "pattern": "user-to-server token.*(sync|fetch)|(sync|fetch).*user-to-server token",
+        "reason": "data is fetched with installation tokens; user tokens only for identity and access (SPEC D-4)"
+      },
+      {
+        "pattern": "nice-to-have",
+        "reason": "no optional requirements in v1; the dependency graph is required (SPEC D-6)"
+      }
+    ]
+  }
+}

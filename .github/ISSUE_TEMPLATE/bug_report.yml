@@ -1,0 +1,69 @@
+name: Bug report
+description: Something in Crossboard isn't working as expected.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more of this you can
+        fill in, the faster it can be triaged and reproduced.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect instead?
+      placeholder: |
+        What happened:
+        What I expected:
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The exact steps, in order, that trigger this.
+      placeholder: |
+        1. …
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: e.g. v0.3.1 or commit 4bdc7e6
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Where it runs — OS, deployment, anything relevant to the bug.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or diagnostics
+      description: Relevant output. Remove secrets and tokens before pasting.
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      description: Best guess is fine — triage will confirm or correct it.
+      options:
+        - area:server (HTTP app, API routes, jobs interface, config — apps/server)
+        - area:auth (GitHub App OAuth, setup flow, sessions, token encryption — apps/server/src/auth)
+        - area:sync (Sync, webhooks, reconciliation, GitHub client — apps/server/src/{sync,webhooks,github})
+        - area:db (Drizzle schema and migrations, access scoping — apps/server/src/db)
+        - area:query (Filter parser and evaluator shared by server and web — packages/query)
+        - area:web (React SPA: list, boards, detail panel — apps/web)
+        - area:ci (GitHub workflows, Dockerfile, compose, release)
+        - area:docs (docs/ — spec, self-host guide, README)
+        - not sure
+    validations:
+      required: false

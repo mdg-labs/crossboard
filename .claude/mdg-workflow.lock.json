@@ -1,0 +1,180 @@
+{
+  "source": "mdg-labs/skills",
+  "ref": "main",
+  "commit": "b702911b6802bc49bc57e1b6779c81b739f9ccda",
+  "profile": "full",
+  "exclude": [
+    "skills/customer-docs/",
+    "skills/security-audit/"
+  ],
+  "files": [
+    {
+      "path": ".claude/agents/ci-investigator.md",
+      "sha256": "7c495b4247088ca50ac14101e1c5906f1ca345b9b80e3c47ba5ceb2b0edf008f"
+    },
+    {
+      "path": ".claude/agents/issue-refiner.md",
+      "sha256": "054041e97089d3e7f9bded058531212b585688bdd16d3a393b82823372f45a5c"
+    },
+    {
+      "path": ".claude/agents/security-reviewer.md",
+      "sha256": "142e34bbe3c07ce070cfe9623ac27f671461a2f790efd57921a69763a87d6ef4"
+    },
+    {
+      "path": ".claude/agents/security-verifier.md",
+      "sha256": "a99b50a72829f31602da4312c8977f3e0199225dd1d3f04c143f349862bd63ee"
+    },
+    {
+      "path": ".claude/agents/task-executor.md",
+      "sha256": "0835a0cadefd016687b51a910ff0885ba527a89a53dc2345aa2b39aaf1c92fea"
+    },
+    {
+      "path": ".claude/agents/task-verifier.md",
+      "sha256": "b9bbc7165a07ed94010ad743bd509e07678bc6c38b2aa7f23476af74e1dec9e1"
+    },
+    {
+      "path": ".claude/rules/mdg-git.md",
+      "sha256": "448d1d5ecff07c8978a47bba317ba0981546030affc9a73cd6a05d891e9d1924"
+    },
+    {
+      "path": ".claude/rules/mdg-github-actions.md",
+      "sha256": "fb90bde0089321c7bbaa27b1062871f910e0fbf8a98a1fb759a88ad0198030f2"
+    },
+    {
+      "path": ".claude/rules/mdg-security.md",
+      "sha256": "14ed821ef5972719df1434ced185cdba249c0ebd0362582a8498b2dea066f4a9"
+    },
+    {
+      "path": ".claude/scripts/act-run.sh",
+      "sha256": "7aa07111c1e7f66fd994438ae2f1633ef856afe126eb837e3c6b502513dbf6b0"
+    },
+    {
+      "path": ".claude/scripts/audit-report.sh",
+      "sha256": "4f845d07b61fcc37e080cc3a9dd75c06db89bd24de88a2699b053b5919bf2203"
+    },
+    {
+      "path": ".claude/scripts/bootstrap-labels.sh",
+      "sha256": "3769a6eb9fa79ffb7085b877a771a84bdd78d16b40f27651ec581702b739f4bd"
+    },
+    {
+      "path": ".claude/scripts/check-gh-rest.sh",
+      "sha256": "132d04ee9a4b5c0f6387ce171285cb755f6380b98d7f37706846e90da9c75d64"
+    },
+    {
+      "path": ".claude/scripts/epic-status.sh",
+      "sha256": "2e44f32ff5275d2c84a14a3acb71d3750ec1cf54be9bc2f74a088d203ef707e2"
+    },
+    {
+      "path": ".claude/scripts/gh-rest-allowlist.txt",
+      "sha256": "a77b25ee82a0da63e55f0205e110c99118052a6dcf41554bfedd95a7b5e831af"
+    },
+    {
+      "path": ".claude/scripts/gh-rest.sh",
+      "sha256": "9bbeed10e70c15e6006910466614387fa2bc2b17f12f956a38dbb1a404b940bc"
+    },
+    {
+      "path": ".claude/scripts/issue-readiness.sh",
+      "sha256": "a40525ab46deb85cc2440f3821e7e26542b853c653da7e288b6ac7e91978bb82"
+    },
+    {
+      "path": ".claude/scripts/issue-status.sh",
+      "sha256": "f8bb85433c215eba371a0cf004aba53405542313315526b44297ce48bd408727"
+    },
+    {
+      "path": ".claude/scripts/notify-discord.sh",
+      "sha256": "90de81d9da5c0dd3b7d541183630f8cc877d400130c4666e68c52e385a72ee48"
+    },
+    {
+      "path": ".claude/scripts/security-history.sh",
+      "sha256": "b75d20ac0a10dea59bcf26f7c5b4baeaccd8251bd8a61861744b16bed8edbdba"
+    },
+    {
+      "path": ".claude/scripts/security-route.sh",
+      "sha256": "50031b02c696b2a7af68ad3c838d399ca53d41fe1a3d575ff0f1ef18c82fbe95"
+    },
+    {
+      "path": ".claude/scripts/workflow-config.sh",
+      "sha256": "eb9a808e9f2160bc14ae07227007094ae78b8abbb73a30dd91ff64a425c7d3f1"
+    },
+    {
+      "path": ".claude/skills/dev-diff/SKILL.md",
+      "sha256": "2056ad28579194f2e94cd5b9c60b3ce3bf40729dd9692dc92d7f0f9c07f5ccfd"
+    },
+    {
+      "path": ".claude/skills/dev-diff/dev-diff.sh",
+      "sha256": "596f0341d3ad2a71d251527e51c5eb48d54c52e3734627384fff2aa063d332da"
+    },
+    {
+      "path": ".claude/skills/open-pr/SKILL.md",
+      "sha256": "e33d864379b43f93866044b371eae4e8e3aad774ce49779fb0f4ef6030a8c348"
+    },
+    {
+      "path": ".claude/skills/orchestrate/SKILL.md",
+      "sha256": "f0e86ba307d6e0ea5a5d94e36a96c8719ab9b8ec9b5a1ab92d03eaaebb7c8696"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/TOKENS.md",
+      "sha256": "787aea8060402bd717cbf9076b17ca44e98f7914b73fe54ee164f25883ea5361"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/execution-report.md",
+      "sha256": "7acaf9f1492d1e035d41f6da694ad68a60298178833739fcc97e426bc6d06be3"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/executor-prompt.md",
+      "sha256": "d51d282035d6b1df1c561f2f18c519de9a1bc76b2943ebee0d89f68390eb184d"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/refiner-prompt.md",
+      "sha256": "e5de2d092ea8337cb54e4ebf4b537aa395bd1ea82d510f09062a3b02c83dfe2b"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/refiner-verdict.md",
+      "sha256": "13a5ab1c793d72de0ffca98a4b256f98200de454e99acab8aede750f77da507f"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/verification-comment.md",
+      "sha256": "6a286c9f0bdfb4728f36be712bd15bd65a33304907cc0744bcee485f0e23c8fa"
+    },
+    {
+      "path": ".claude/skills/orchestrate/templates/verifier-prompt.md",
+      "sha256": "73af3f68049008f4e01fdeb8a32ff4d207a9e185300f13664354a12ac77374e8"
+    },
+    {
+      "path": ".claude/skills/pr-review/SKILL.md",
+      "sha256": "02d5b49bbb722c8d3f2806107059f04c6d835b1066ca26af00b9b9211a0ed9ed"
+    },
+    {
+      "path": ".claude/skills/pr-review/templates/finding-dispatch.md",
+      "sha256": "99e6b7399949a7304656941d0c6cdb43c2b8826ba4a0d1f9061b33dbbc3e59e3"
+    },
+    {
+      "path": ".claude/skills/triage/SKILL.md",
+      "sha256": "5a17127b3de80f706deee4c595baa8222b7becbccf30ea1f213ea66f814c9fc6"
+    },
+    {
+      "path": ".claude/skills/triage/templates/item-shapes.md",
+      "sha256": "4b3037a1eb4c2333d1805de48a6f46393751fe69f857d86e18601450a4fc559f"
+    },
+    {
+      "path": ".claude/skills/triage/templates/titles.md",
+      "sha256": "bd0b15ac9a2669634db530a0e1f4989a6a51f81bd16f712489fe456cbe306682"
+    },
+    {
+      "path": ".claude/trackers/README.md",
+      "sha256": "0aff445ac3fe6e53d541a382b14646958f4bc70688e4d0cb2d5ab1b4079a9eb3"
+    },
+    {
+      "path": ".claude/trackers/github.md",
+      "sha256": "928817926aa1d180e61b61043ceefd01f99eeb169af78d967c0add5b6ced7e8c"
+    },
+    {
+      "path": ".claude/trackers/kaneo.md",
+      "sha256": "e3440d0905e16e71ba00e263c6a64afafff13d7dc3daf145b0f4773430768779"
+    },
+    {
+      "path": ".claude/workflow.schema.json",
+      "sha256": "83ad4637a7fc8a63b766177427419a663d23dd542357e48c58e813c2df25cb30"
+    }
+  ]
+}
