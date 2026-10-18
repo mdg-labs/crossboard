@@ -1,16 +1,19 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer, type Server } from "node:http";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { githubEnv, SENTINEL, validEnv } from "./helpers.js";
+import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
 
 let output: string[];
 let exit: ReturnType<typeof vi.spyOn>;
 let dataDir: string;
-let opened: { sqlite: Database.Database }[];
+let opened: { sqlite: Database.Database; server: Server }[];
+let port: number;
 
-beforeEach(() => {
+beforeEach(async () => {
+  port = await freePort();
   output = [];
   opened = [];
   dataDir = mkdtempSync(join(tmpdir(), "crossboard-entry-"));
@@ -26,6 +29,8 @@ beforeEach(() => {
 
 afterEach(() => {
   for (const handle of opened) {
+    handle.server.close();
+    handle.server.closeAllConnections();
     handle.sqlite.close();
   }
   rmSync(dataDir, { recursive: true, force: true });
@@ -44,6 +49,7 @@ function stubEnv(env: Record<string, string>) {
     vi.stubEnv(name, "");
   }
   vi.stubEnv("CROSSBOARD_DATA_DIR", dataDir);
+  vi.stubEnv("PORT", String(port));
   for (const [name, value] of Object.entries(env)) {
     vi.stubEnv(name, value);
   }
@@ -51,7 +57,7 @@ function stubEnv(env: Record<string, string>) {
 
 async function start() {
   const entry = await import("../src/index.js");
-  opened.push(entry.database);
+  opened.push({ sqlite: entry.database.sqlite, server: entry.server });
   return entry;
 }
 
@@ -68,9 +74,9 @@ function rowsOf(table: string) {
 
 describe("process entry", () => {
   it("loads the config from the environment and creates the logger", async () => {
-    stubEnv({ ...validEnv, PORT: "4321", LOG_LEVEL: "warn" });
+    stubEnv({ ...validEnv, LOG_LEVEL: "warn" });
     const entry = await start();
-    expect(entry.config.port).toBe(4321);
+    expect(entry.config.port).toBe(port);
     expect(entry.logger.level).toBe("warn");
     expect(exit).not.toHaveBeenCalled();
   });
@@ -115,6 +121,10 @@ describe("process entry", () => {
     first.database.sqlite.exec(
       "INSERT INTO users VALUES (1, 1, 'a', NULL, 'u', 0, 0)",
     );
+    await new Promise<void>((resolve) => {
+      first.server.close(() => resolve());
+      first.server.closeAllConnections();
+    });
     first.database.sqlite.close();
     opened.pop();
 
@@ -143,5 +153,56 @@ describe("process entry", () => {
     new Database(join(dataDir, "crossboard.db")).close();
     await expect(import("../src/index.js")).rejects.toThrow("process.exit(1)");
     expect(JSON.parse(output.join("").trim()).level).toBe(60);
+  });
+
+  it("serves /api/health on PORT once the migrations are applied", async () => {
+    stubEnv(validEnv);
+    await start();
+    const response = await fetch(`http://127.0.0.1:${port}/api/health`);
+    expect(response.status).toBe(200);
+    const manifest = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    expect(await response.json()).toEqual({
+      status: "ok",
+      version: manifest.version,
+    });
+    expect(output.join("")).toContain('"msg":"listening"');
+  });
+
+  it("answers unknown /api routes in the error shape through the listener", async () => {
+    stubEnv(validEnv);
+    await start();
+    const response = await fetch(`http://127.0.0.1:${port}/api/nope`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: { code: "not_found", message: "Not found" },
+    });
+  });
+
+  it("logs a JSON fatal and exits non-zero when the port is taken", async () => {
+    const holder = createServer();
+    await new Promise<void>((resolve) => holder.listen(port, resolve));
+    try {
+      stubEnv(validEnv);
+      const exited = new Promise<unknown>((resolve) => {
+        exit.mockImplementation((code?: string | number | null) => {
+          resolve(code);
+          return undefined as never;
+        });
+      });
+      const entry = await import("../src/index.js");
+      expect(await exited).toBe(1);
+      const fatal = output
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { level: number; msg: string })
+        .find((record) => record.level === 60);
+      expect(fatal?.msg).toContain("HTTP server");
+      entry.database.sqlite.close();
+    } finally {
+      holder.close();
+    }
   });
 });

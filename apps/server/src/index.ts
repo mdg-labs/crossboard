@@ -1,6 +1,13 @@
+import { existsSync } from "node:fs";
+import type { Server } from "node:http";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { serve } from "@hono/node-server";
+import { createApp } from "./app.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
 import { createLogger } from "./logger.js";
+import { readServerVersion } from "./version.js";
 import type { Logger } from "pino";
 
 function bootstrap(): {
@@ -41,3 +48,23 @@ logger.info(
   { port: config.port, webhooks: config.webhooks },
   "crossboard configured",
 );
+
+const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
+if (!existsSync(join(webRoot, "index.html"))) {
+  logger.warn(
+    { webRoot },
+    "the built web app was not found; only /api is served",
+  );
+}
+
+const app = createApp({ logger, version: readServerVersion(), webRoot });
+
+// Without the http2 option, serve() returns a plain http.Server.
+export const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
+  logger.info({ port: info.port }, "listening");
+}) as Server;
+
+server.on("error", (error) => {
+  logger.fatal({ err: error, port: config.port }, "the HTTP server failed");
+  process.exit(1);
+});

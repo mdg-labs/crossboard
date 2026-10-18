@@ -14,3 +14,19 @@ export const githubEnv = {
   GITHUB_PRIVATE_KEY: `key-${SENTINEL}`,
   GITHUB_WEBHOOK_SECRET: `hook-${SENTINEL}`,
 };
+
+export async function freePort(): Promise<number> {
+  const { createServer } = await import("node:net");
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, () => {
+      const address = probe.address();
+      probe.close(() =>
+        typeof address === "object" && address
+          ? resolve(address.port)
+          : reject(new Error("no port")),
+      );
+    });
+  });
+}
