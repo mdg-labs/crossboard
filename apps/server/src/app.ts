@@ -5,6 +5,7 @@ import type { Logger } from "pino";
 import { createApi } from "./api/index.js";
 import { createErrorHandler, notFound } from "./api/errors.js";
 import {
+  createSetupCallback,
   createSetupRoutes,
   setupGate,
   type Setup,
@@ -30,6 +31,15 @@ export function createApp(options: AppOptions) {
         setup: options.setup,
         appSecret: options.appSecret,
         publicUrl: options.publicUrl,
+      }),
+    )
+    .route(
+      "/setup/callback",
+      createSetupCallback({
+        setup: options.setup,
+        github: options.github,
+        logger: options.logger,
+        appSecret: options.appSecret,
       }),
     )
     .route(

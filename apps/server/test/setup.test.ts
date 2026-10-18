@@ -106,13 +106,9 @@ describe("setup gate", () => {
     expect(response.status).toBe(302);
   });
 
-  it("serves the setup routes, the callback, health and static assets", async () => {
+  it("serves the setup page, health and static assets", async () => {
     const { app } = build();
-    for (const path of [
-      "/setup",
-      "/setup/",
-      "/setup/callback?code=x&state=y",
-    ]) {
+    for (const path of ["/setup", "/setup/"]) {
       const response = await app.request(path);
       expect(response.status, path).toBe(200);
       expect(await response.text(), path).toContain("shell");

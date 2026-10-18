@@ -1,13 +1,16 @@
 import { statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import type { MiddlewareHandler } from "hono";
+import { notFound } from "../../api/errors.js";
 import type { Setup } from "./token.js";
 
-const isSetupPath = (path: string) =>
+const isSetupRoute = (path: string) =>
   path === "/setup" ||
   path.startsWith("/setup/") ||
-  path.startsWith("/api/setup/") ||
-  path === "/api/health";
+  path.startsWith("/api/setup/");
+
+const isSetupPath = (path: string) =>
+  isSetupRoute(path) || path === "/api/health";
 
 const isApiPath = (path: string) =>
   path === "/api" ||
@@ -33,15 +36,15 @@ function isStaticFile(webRoot: string, path: string): boolean {
 /**
  * While the instance has no App credentials, only the setup routes, the
  * health endpoint and the web app's static files are served; everything else
- * redirects to `/setup` (SPEC FR-47). Mounted ahead of every other route.
+ * redirects to `/setup` (SPEC FR-47). Once credentials exist, the setup routes
+ * answer `404` (FR-49, FR-50). Mounted ahead of every other route.
  */
 export function setupGate(setup: Setup, webRoot: string): MiddlewareHandler {
   return async (c, next) => {
-    if (
-      !setup.isRequired() ||
-      isSetupPath(c.req.path) ||
-      isStaticFile(webRoot, c.req.path)
-    ) {
+    if (!setup.isRequired()) {
+      return isSetupRoute(c.req.path) ? notFound(c) : next();
+    }
+    if (isSetupPath(c.req.path) || isStaticFile(webRoot, c.req.path)) {
       return next();
     }
     return c.redirect("/setup", 302);

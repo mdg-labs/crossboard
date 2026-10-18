@@ -20,16 +20,21 @@ const isLocalHttp = (publicUrl: string) => {
   return url.protocol === "http:" && url.hostname === "localhost";
 };
 
+/**
+ * Sets the signed setup cookie. Its value is the expiry in epoch milliseconds,
+ * followed by `:<state>` once the manifest form has been issued (SPEC FR-49).
+ */
 export async function issueSetupCookie(
   c: Context,
   { appSecret, publicUrl }: SetupCookieOptions,
   now: number = Date.now(),
+  state?: string,
 ): Promise<void> {
   const expiresAt = now + SETUP_COOKIE_TTL_SECONDS * 1000;
   await setSignedCookie(
     c,
     SETUP_COOKIE,
-    String(expiresAt),
+    state === undefined ? String(expiresAt) : `${String(expiresAt)}:${state}`,
     signingKey(appSecret),
     {
       httpOnly: true,
@@ -41,15 +46,33 @@ export async function issueSetupCookie(
   );
 }
 
-/** True when the request carries an untampered, unexpired setup cookie. */
-export async function hasValidSetupCookie(
+export interface SetupSession {
+  /** The `state` of the manifest form issued with this cookie, if any. */
+  state: string | undefined;
+}
+
+/** The setup session an untampered, unexpired setup cookie carries, else null. */
+export async function readSetupCookie(
   c: Context,
   { appSecret }: Pick<SetupCookieOptions, "appSecret">,
   now: number = Date.now(),
-): Promise<boolean> {
+): Promise<SetupSession | null> {
   const value = await getSignedCookie(c, signingKey(appSecret), SETUP_COOKIE);
-  if (typeof value !== "string" || !/^\d+$/.test(value)) {
-    return false;
+  if (typeof value !== "string") {
+    return null;
   }
-  return Number(value) > now;
+  const match = /^(\d+)(?::([A-Za-z0-9_-]+))?$/.exec(value);
+  if (match === null || Number(match[1]) <= now) {
+    return null;
+  }
+  return { state: match[2] };
+}
+
+/** True when the request carries an untampered, unexpired setup cookie. */
+export async function hasValidSetupCookie(
+  c: Context,
+  options: Pick<SetupCookieOptions, "appSecret">,
+  now: number = Date.now(),
+): Promise<boolean> {
+  return (await readSetupCookie(c, options, now)) !== null;
 }

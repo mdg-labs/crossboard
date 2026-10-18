@@ -3,7 +3,8 @@ import { eq } from "drizzle-orm";
 import type { Logger } from "pino";
 import { schema, type Db } from "../../db/index.js";
 import { decrypt, encrypt } from "../../security/index.js";
-import { resolveCredentials } from "../credentials.js";
+import type { GithubManifestConversion } from "../../github/index.js";
+import { resolveCredentials, storeCredentials } from "../credentials.js";
 import type { Config } from "../../config/index.js";
 
 export const SETUP_TOKEN_KEY = "setup_token_hash";
@@ -13,7 +14,10 @@ const hashToken = (token: string) =>
 
 export interface SetupOptions {
   db: Db;
-  config: Pick<Config, "github" | "appSecret" | "publicUrl">;
+  config: Pick<
+    Config,
+    "github" | "appSecret" | "publicUrl" | "webhooks" | "githubWebUrl"
+  >;
   logger: Logger;
 }
 
@@ -26,6 +30,17 @@ export interface Setup {
    */
   start(): string | null;
   verify(token: string): boolean;
+  /** What the App manifest takes from the configuration. */
+  readonly instance: {
+    publicUrl: string;
+    webhooks: boolean;
+    githubWebUrl: string;
+  };
+  /**
+   * Stores the converted App's credentials encrypted, which closes setup.
+   * Returns false, writing nothing, when credentials exist already.
+   */
+  complete(app: GithubManifestConversion): boolean;
 }
 
 export function createSetup({ db, config, logger }: SetupOptions): Setup {
@@ -42,6 +57,30 @@ export function createSetup({ db, config, logger }: SetupOptions): Setup {
 
   return {
     isRequired,
+
+    instance: {
+      publicUrl: config.publicUrl,
+      webhooks: config.webhooks,
+      githubWebUrl: config.githubWebUrl,
+    },
+
+    complete(app) {
+      if (!isRequired()) {
+        return false;
+      }
+      storeCredentials(
+        { db, appSecret: config.appSecret },
+        {
+          appId: String(app.id),
+          appSlug: app.slug,
+          clientId: app.clientId,
+          clientSecret: app.clientSecret,
+          privateKey: app.pem,
+          webhookSecret: app.webhookSecret,
+        },
+      );
+      return true;
+    },
 
     start() {
       if (!isRequired()) {

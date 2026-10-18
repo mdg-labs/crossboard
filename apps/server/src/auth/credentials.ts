@@ -3,7 +3,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import type { Config, GithubAppCredentials } from "../config/index.js";
 import { schema, type Db } from "../db/index.js";
-import { decrypt } from "../security/index.js";
+import { decrypt, encrypt } from "../security/index.js";
 
 export const APP_CREDENTIALS_KEY = "github_app";
 
@@ -54,4 +54,23 @@ export function resolveCredentials({
     );
     return null;
   }
+}
+
+/**
+ * Stores the credentials encrypted in `app_config`, replacing a previous value
+ * (which may be one that can no longer be decrypted).
+ */
+export function storeCredentials(
+  { db, appSecret }: { db: Db; appSecret: string },
+  credentials: GithubAppCredentials,
+): void {
+  const valueEnc = encrypt(JSON.stringify(credentials), appSecret);
+  const updatedAt = Date.now();
+  db.insert(schema.appConfig)
+    .values({ key: APP_CREDENTIALS_KEY, valueEnc, updatedAt })
+    .onConflictDoUpdate({
+      target: schema.appConfig.key,
+      set: { valueEnc, updatedAt },
+    })
+    .run();
 }
