@@ -287,15 +287,31 @@ describe("GET /auth/callback state check", () => {
 });
 
 describe("the allowlist", () => {
-  it("admits a user whose login is allowed, ignoring case", async () => {
+  it("admits a user whose login is allowed, ignoring case, without looking up installations", async () => {
+    // The user row is written right after the allowlist decision, so a lookup
+    // that finds no user row yet was made to take that decision.
+    const lookups: { path: string; usersStored: number }[] = [];
+    fake.server.use(
+      http.get(`${FAKE_API_URL}/user/installations`, ({ request }) => {
+        lookups.push({
+          path: new URL(request.url).pathname,
+          usersStored: rows().users.length,
+        });
+        return HttpResponse.json({ total_count: 0, installations: [] });
+      }),
+    );
     const { app } = build({ CROSSBOARD_ALLOWED_USERS: "OCTOCAT" });
     const response = await signInThroughGithub(app);
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("/");
     expect(rows().users.map((user) => user.login)).toEqual(["octocat"]);
-    expect(fake.requests.map((request) => request.url)).not.toContain(
-      `${FAKE_API_URL}/user/installations`,
-    );
+    // The access computation after admission does read the installations, so
+    // the check below is not vacuous.
+    expect(lookups.length).toBeGreaterThan(0);
+    expect(
+      lookups.filter((lookup) => lookup.usersStored === 0),
+      "installation lookups made before the user was admitted",
+    ).toEqual([]);
   });
 
   it("admits a user with an installation of an allowed org, ignoring case", async () => {
