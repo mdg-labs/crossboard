@@ -68,3 +68,23 @@ server.on("error", (error) => {
   logger.fatal({ err: error, port: config.port }, "the HTTP server failed");
   process.exit(1);
 });
+
+// The container runs this process as PID 1, where an unhandled SIGTERM is
+// ignored and `docker stop` ends in a SIGKILL. Stop accepting connections, let
+// in-flight requests finish (cut off after a grace period shorter than
+// Docker's 10 s), then close the database so the WAL is checkpointed.
+const SHUTDOWN_GRACE_MS = 5_000;
+
+function shutdown(signal: NodeJS.Signals): void {
+  logger.info({ signal }, "shutting down");
+  server.close(() => {
+    database.sqlite.close();
+    process.exit(0);
+  });
+  server.closeIdleConnections();
+  setTimeout(() => server.closeAllConnections(), SHUTDOWN_GRACE_MS).unref();
+}
+
+for (const signal of ["SIGTERM", "SIGINT"] as const) {
+  process.once(signal, shutdown);
+}

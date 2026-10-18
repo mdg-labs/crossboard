@@ -11,8 +11,14 @@ let exit: ReturnType<typeof vi.spyOn>;
 let dataDir: string;
 let opened: { sqlite: Database.Database; server: Server }[];
 let port: number;
+let signalListeners: Map<NodeJS.Signals, NodeJS.SignalsListener[]>;
+
+const SIGNALS = ["SIGTERM", "SIGINT"] as const;
 
 beforeEach(async () => {
+  signalListeners = new Map(
+    SIGNALS.map((signal) => [signal, process.listeners(signal)]),
+  );
   port = await freePort();
   output = [];
   opened = [];
@@ -32,6 +38,14 @@ afterEach(() => {
     handle.server.close();
     handle.server.closeAllConnections();
     handle.sqlite.close();
+  }
+  // Every import of the entry registers its own signal handlers.
+  for (const signal of SIGNALS) {
+    for (const listener of process.listeners(signal)) {
+      if (!signalListeners.get(signal)?.includes(listener)) {
+        process.removeListener(signal, listener);
+      }
+    }
   }
   rmSync(dataDir, { recursive: true, force: true });
   vi.unstubAllEnvs();
@@ -179,6 +193,33 @@ describe("process entry", () => {
       error: { code: "not_found", message: "Not found" },
     });
   });
+
+  it.each(SIGNALS)(
+    "closes the listener and the database and exits 0 on %s",
+    async (signal) => {
+      stubEnv(validEnv);
+      const exited = new Promise<unknown>((resolve) => {
+        exit.mockImplementation((code?: string | number | null) => {
+          resolve(code);
+          return undefined as never;
+        });
+      });
+      const entry = await start();
+      if (!entry.server.listening) {
+        await new Promise((resolve) => entry.server.once("listening", resolve));
+      }
+
+      process.emit(signal, signal);
+      expect(await exited).toBe(0);
+      expect(entry.server.listening).toBe(false);
+      expect(entry.database.sqlite.open).toBe(false);
+      expect(output.join("")).toContain('"msg":"shutting down"');
+      expect(process.listenerCount(signal)).toBe(
+        signalListeners.get(signal)?.length,
+      );
+      opened.pop();
+    },
+  );
 
   it("logs a JSON fatal and exits non-zero when the port is taken", async () => {
     const holder = createServer();
