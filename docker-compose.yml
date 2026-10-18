@@ -1,0 +1,21 @@
+# Example deployment. Replace every <...> placeholder before starting; the server
+# refuses to start while CROSSBOARD_PUBLIC_URL or CROSSBOARD_APP_SECRET still hold
+# a placeholder. Generate the secret with `openssl rand -hex 32`.
+services:
+  crossboard:
+    build: .
+    image: crossboard:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      CROSSBOARD_PUBLIC_URL: "<your public URL>"
+      CROSSBOARD_APP_SECRET: "<your app secret>"
+      # At least one of the two allowlists is required (comma-separated logins).
+      CROSSBOARD_ALLOWED_USERS: "<your GitHub login>"
+      # CROSSBOARD_ALLOWED_ORGS: "<your GitHub organization>"
+    volumes:
+      - crossboard-data:/data
+
+volumes:
+  crossboard-data:

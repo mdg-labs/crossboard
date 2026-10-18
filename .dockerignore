@@ -1,0 +1,32 @@
+# VCS, agent tooling and editor state
+.git
+.claude
+.agents
+.github
+.vscode
+.idea
+
+# dependencies and build output are produced inside the image
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/*.tsbuildinfo
+**/.vite
+
+# local data, databases and secrets
+data
+**/*.db
+**/*.db-shm
+**/*.db-wal
+.env
+.env.*
+!.env.example
+
+# not needed to build the image
+docs
+e2e
+Dockerfile
+.dockerignore
+docker-compose*.yml
+**/*.md
