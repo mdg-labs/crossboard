@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
 import { IndexRoute } from "@/routes/index";
+import { SetupRoute } from "@/routes/setup";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -25,16 +26,31 @@ function Shell(): React.ReactElement {
 }
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
+  component: Outlet,
+});
+
+const shellRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: "shell",
   component: Shell,
 });
 
 const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => shellRoute,
   path: "/",
   component: IndexRoute,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute]);
+const setupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/setup",
+  component: SetupRoute,
+});
+
+const routeTree = rootRoute.addChildren([
+  shellRoute.addChildren([indexRoute]),
+  setupRoute,
+]);
 
 export function createAppRouter(options: {
   queryClient: QueryClient;
