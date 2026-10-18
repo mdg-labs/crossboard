@@ -233,7 +233,8 @@ def render_body(e: Entry) -> str:
 
     if e.kind == "epic":
         done = f.get("Done when", "")
-        section("Original report", ("Done when (SPEC §11):\n\n> " + done) if done else f.get("Summary", ""))
+        quoted = "\n".join("> " + ln if ln.strip() else ">" for ln in done.splitlines())
+        section("Original report", ("Done when (SPEC §11):\n\n" + quoted) if done else f.get("Summary", ""))
         section("Summary", f.get("Summary", ""))
         section("Design references", f.get("Design references") or "none")
         section("Goal", f.get("Goal") or done)
@@ -482,13 +483,15 @@ class GhError(RuntimeError):
 RETRYABLE = re.compile(r"rate limit|secondary|abuse|HTTP 429|HTTP 5\d\d|timeout|connection", re.I)
 
 
-def run(args: list[str], what: str) -> str:
+def run(args: list[str], what: str, retry: bool = True) -> str:
+    """Run a command, retrying rate limits and transient failures unless
+    `retry` is off (for calls that are not idempotent)."""
     for attempt in range(10):
         proc = subprocess.run(args, capture_output=True, text=True, cwd=ROOT)
         if proc.returncode == 0:
             return proc.stdout
         err = (proc.stderr + proc.stdout).strip()
-        if RETRYABLE.search(err) and attempt < 9:
+        if retry and RETRYABLE.search(err) and attempt < 9:
             wait = min(30 * 2 ** attempt, 600)
             print(f"  {what}: GitHub asked us to slow down; waiting {wait}s (attempt {attempt + 1})", flush=True)
             time.sleep(wait)
@@ -497,9 +500,37 @@ def run(args: list[str], what: str) -> str:
     raise GhError(f"{what}: gave up after retries")
 
 
-def gh_rest(*args: str) -> object:
-    out = run([str(GH_REST), *args], f"gh-rest.sh {args[0]}")
+def gh_rest(*args: str, retry: bool = True) -> object:
+    out = run([str(GH_REST), *args], f"gh-rest.sh {args[0]}", retry=retry)
     return json.loads(out) if out.strip() else None
+
+
+def find_by_marker(ident: str) -> dict | None:
+    for issue in gh_rest("issue-list", "--state", "all") or []:  # type: ignore[union-attr]
+        if marker(ident) in (issue.get("body") or ""):
+            return issue
+    return None
+
+
+def create_issue(ident: str, cmd: list[str]) -> dict:
+    """Create an issue without ever creating it twice. A failed create may still
+    have reached GitHub (a timeout after the write), so before each new attempt
+    the issue is looked up by its roadmap marker."""
+    for attempt in range(6):
+        try:
+            return gh_rest(*cmd, retry=False)  # type: ignore[return-value]
+        except GhError as exc:
+            if attempt == 5:
+                raise
+            wait = min(30 * 2 ** attempt, 600)
+            print(f"  create {ident} failed; checking whether it landed, then retrying in {wait}s", flush=True)
+            time.sleep(wait)
+            found = find_by_marker(ident)
+            if found:
+                return found
+            if not RETRYABLE.search(str(exc)):
+                raise
+    raise GhError(f"create {ident}: gave up")
 
 
 def create_milestone(title: str) -> None:
@@ -577,6 +608,11 @@ def main() -> int:
         have_ms = {m["title"] for m in gh_rest("paged", "milestones?state=all") or []}  # type: ignore[union-attr]
         missing_ms = sorted({milestone_of[e.ident] for e in selected} - have_ms)
         todo = [e for e in selected if e.ident not in existing]
+        # A partial run never files an entry whose dependency is not filed yet:
+        # its blocked-by edge could not be created, and no later run would add
+        # it, because that run would not select this entry again.
+        unfiled = sorted({f"{e.ident} needs {d}" for e in selected for d in e.depends
+                          if d not in existing and d not in wanted})
 
         if not args.apply:
             print(f"Target repo: {REPO}\nDRY RUN — nothing will be created. Re-run with --apply.\n")
@@ -587,6 +623,8 @@ def main() -> int:
             held = [e.ident for e in selected if set(e.labels) & MAINTAINER_APPLIED]
             if held:
                 print(f"Filed without their maintainer-applied label, for you to add right after --apply: {', '.join(held)}")
+            if unfiled:
+                print(f"--apply would refuse: dependencies not filed and not selected: {'; '.join(unfiled)}")
             print(f"\nIssues to create: {len(todo)} · already filed: {len([e for e in selected if e.ident in existing])}\n")
             for e in sorted(selected, key=lambda e: e.line):
                 d = depth(e, by_id)
@@ -600,6 +638,9 @@ def main() -> int:
 
         if missing_labels:
             print(f"Labels missing: {', '.join(missing_labels)} — run .claude/scripts/bootstrap-labels.sh first.")
+            return 1
+        if unfiled:
+            print(f"Refusing: dependencies not filed and not selected: {'; '.join(unfiled)}. Add them to the ids.")
             return 1
         if full_run and not args.keep:
             try:
@@ -635,8 +676,8 @@ def main() -> int:
                        "--milestone", milestone_of[e.ident]]
                 for lab in create_labels(e):
                     cmd += ["--label", lab]
-                issue = gh_rest(*cmd)
-                existing[e.ident] = issue  # type: ignore[assignment]
+                issue = create_issue(e.ident, cmd)
+                existing[e.ident] = issue
                 print(f"  {'epic' if e.kind == 'epic' else 'leaf'} #{issue['number']:<5} {e.ident:<8} {e.title}")  # type: ignore[index]
                 time.sleep(1.0)
 
