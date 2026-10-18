@@ -10,4 +10,10 @@ One line per pattern: **category** — what goes wrong — where it was seen.
 Keep it to patterns, not individual bugs; merge a new instance into an
 existing line by adding its PR number.
 
-No patterns recorded yet.
+## Runtime and packaging
+
+- **Process lifecycle** — a server that runs as the container's PID 1 registers no SIGTERM/SIGINT handler, so a stop is a SIGKILL after the grace period with requests undrained and the database left open — PR 68
+
+## Threat model
+
+- **Coverage gap** — an attacker capability or entry point named in the threat model (a replayed delivery, pull-request code on CI) that no invariant in §4 or residual in §5 answers — PR 68
