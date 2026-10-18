@@ -11,6 +11,7 @@ import {
   createSession,
   findSession,
   issueSession,
+  enqueueSessionCleanupAtStart,
   registerSessionCleanup,
   sanitizeReturnPath,
   SESSION_CLEANUP_INTERVAL_MS,
@@ -650,6 +651,20 @@ describe("daily session cleanup", () => {
     expect(sessionCount()).toBe(0);
     expect(tokenRows()).toEqual([]);
     await jobs.stop();
+  });
+
+  it("runs once at start through the jobs interface, without waiting a day", async () => {
+    const user = addUser(database.db);
+    createSession(database.db, user.id, Date.now() - SESSION_TTL_MS - 1);
+    addTokens(user.id);
+    const jobs = createJobs({ logger: createLogger("silent") });
+    registerSessionCleanup(jobs, database.db, createLogger("silent"));
+    jobs.start();
+
+    expect(enqueueSessionCleanupAtStart(jobs)).toBe(true);
+    await jobs.stop();
+    expect(sessionCount()).toBe(0);
+    expect(tokenRows()).toEqual([]);
   });
 
   it("is a daily interval", () => {

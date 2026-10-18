@@ -1,4 +1,5 @@
 export {
+  enqueueSessionCleanupAtStart,
   registerSessionCleanup,
   SESSION_CLEANUP_INTERVAL_MS,
   SESSION_CLEANUP_JOB,

@@ -5,7 +5,9 @@ import { createServer, type Server } from "node:http";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
-import { signIn } from "./sign-in.js";
+import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
+import { openAndMigrate, schema } from "../src/db/index.js";
+import { addUser, signIn } from "./sign-in.js";
 import {
   createFakeGithub,
   FAKE_API_URL,
@@ -227,6 +229,46 @@ describe("process entry", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     expect(count().get()).toBe(0);
+  });
+
+  it("cleans up expired sessions and orphaned tokens shortly after start", async () => {
+    const seed = openAndMigrate(dataDir);
+    const lapsed = addUser(seed.db);
+    createSession(seed.db, lapsed.id, Date.now() - SESSION_TTL_MS - 1);
+    const active = signIn(seed.db);
+    for (const userId of [lapsed.id, active.userId]) {
+      seed.db
+        .insert(schema.userTokens)
+        .values({
+          userId,
+          accessTokenEnc: "v1:a:b:c",
+          accessExpiresAt: 1,
+          refreshTokenEnc: "v1:a:b:c",
+          refreshExpiresAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+    }
+    seed.sqlite.close();
+
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const count = (table: string) =>
+      entry.database.sqlite.prepare(`SELECT count(*) FROM ${table}`).pluck();
+    const deadline = Date.now() + 3000;
+    while (
+      (count("sessions").get() !== 1 || count("user_tokens").get() !== 1) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(count("sessions").get()).toBe(1);
+    expect(
+      entry.database.sqlite
+        .prepare("SELECT user_id FROM user_tokens")
+        .pluck()
+        .all(),
+    ).toEqual([active.userId]);
   });
 
   it("gates a fresh instance behind the setup token it logs at start", async () => {
