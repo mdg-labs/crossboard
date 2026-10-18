@@ -27,3 +27,5 @@ reviews:
     - "!**/vendor/**"
     - "!**/CHANGELOG.md"
     # This repo's own (generated code, recorded evidence, ...):
+    - "!**/.agents/**"  # vendored agent skills (coss)
+    - "!apps/web/src/components/ui/**"  # vendored coss ui components (SPEC D-20)
