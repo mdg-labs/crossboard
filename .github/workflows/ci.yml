@@ -1,0 +1,54 @@
+name: CI
+
+# Runs on the self-hosted runner, so it takes no secret and no write
+# permission: the token is read-only and nothing here publishes (publishing
+# belongs to the tag-gated release workflow, THREAT_MODEL T15). It must stay on
+# `pull_request`, never `pull_request_target`, which would hand a fork's code
+# a write token and the repository secrets.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gate:
+    runs-on: [self-hosted, runners01]
+    timeout-minutes: 30
+    env:
+      IMAGE: crossboard:ci-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      # pnpm falls back to a .pnpm-store inside the checkout when the default
+      # store is on another filesystem, and prettier then checks it.
+      - name: Install
+        env:
+          npm_config_store_dir: ${{ runner.temp }}/pnpm-store
+        run: pnpm install --frozen-lockfile
+
+      - name: Gate
+        run: pnpm gate
+
+      - name: Build the Docker image
+        run: docker build -t "$IMAGE" .
+
+      - name: Remove the Docker image
+        if: always()
+        run: docker image rm --force "$IMAGE"
