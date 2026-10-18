@@ -29,3 +29,19 @@ export function requireSameOriginJson(publicUrl: string): MiddlewareHandler {
     await next();
   };
 }
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Applies {@link requireSameOriginJson} to every state-changing request, so a
+ * route added later is protected without opting in. The webhook route is
+ * exempt: its signature authenticates it (SPEC §9.3).
+ */
+export function protectStateChanges(publicUrl: string): MiddlewareHandler {
+  const guard = requireSameOriginJson(publicUrl);
+  return (c, next) =>
+    SAFE_METHODS.has(c.req.method.toUpperCase()) ||
+    c.req.path === "/webhooks/github"
+      ? next()
+      : guard(c, next);
+}

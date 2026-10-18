@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
+import { registerSessionCleanup } from "./auth/sessions/index.js";
 import { createSetup } from "./auth/setup/index.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
@@ -54,6 +55,7 @@ logger.info(
 
 // Started once the migrations are applied, so handlers can rely on the schema.
 export const jobs = createJobs({ logger });
+registerSessionCleanup(jobs, database.db, logger);
 jobs.start();
 
 const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
@@ -75,6 +77,7 @@ setup.start();
 
 const app = createApp({
   logger,
+  db: database.db,
   github,
   version: readServerVersion(),
   webRoot,

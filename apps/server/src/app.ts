@@ -10,10 +10,21 @@ import {
   setupGate,
   type Setup,
 } from "./auth/setup/index.js";
+import {
+  createAuthRoutes,
+  requireApiSession,
+  requirePageSession,
+} from "./auth/sessions/index.js";
+import type { Db } from "./db/index.js";
 import type { GithubClient } from "./github/index.js";
+import {
+  contentSecurityPolicy,
+  protectStateChanges,
+} from "./security/index.js";
 
 export interface AppOptions {
   logger: Logger;
+  db: Db;
   github: GithubClient;
   version: string;
   webRoot: string;
@@ -23,8 +34,12 @@ export interface AppOptions {
 }
 
 export function createApp(options: AppOptions) {
+  const sessionOptions = { db: options.db, publicUrl: options.publicUrl };
   const app = new Hono()
+    .use(contentSecurityPolicy())
     .use(setupGate(options.setup, options.webRoot))
+    .use(protectStateChanges(options.publicUrl))
+    .use("/api/*", requireApiSession(sessionOptions))
     .route(
       "/api/setup",
       createSetupRoutes({
@@ -42,13 +57,22 @@ export function createApp(options: AppOptions) {
         appSecret: options.appSecret,
       }),
     )
+    .route("/auth", createAuthRoutes(sessionOptions))
     .route(
       "/api",
       createApi({ version: options.version, github: options.github }),
     );
 
   app.all("/api/*", notFound);
-  app.use(serveStatic({ root: options.webRoot }));
+  // Directory requests and /index.html would serve the shell without the
+  // session check below.
+  const staticFiles = serveStatic({ root: options.webRoot });
+  app.use((c, next) =>
+    c.req.path.endsWith("/") || c.req.path === "/index.html"
+      ? next()
+      : staticFiles(c, next),
+  );
+  app.use(requirePageSession(sessionOptions));
   const spaFallback = serveStatic({
     path: join(options.webRoot, "index.html"),
   });

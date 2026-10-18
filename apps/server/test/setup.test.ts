@@ -17,6 +17,7 @@ import { encrypt } from "../src/security/index.js";
 import { Hono } from "hono";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { githubEnv, validEnv } from "./helpers.js";
+import { signIn } from "./sign-in.js";
 
 let dir: string;
 let webRoot: string;
@@ -46,6 +47,7 @@ function build(env: Record<string, string> = validEnv) {
   token = setup.start() ?? "";
   const app = createApp({
     logger,
+    db: database.db,
     github: createGithubClient({
       apiUrl: "https://api.github.test",
       webUrl: "https://github.test",
@@ -156,10 +158,16 @@ describe("setup gate", () => {
 
   it("is lifted when the environment carries the App credentials", async () => {
     const { app } = build({ ...validEnv, ...githubEnv });
-    const response = await app.request("/settings");
+    const { cookie } = signIn(database.db);
+    const response = await app.request("/settings", {
+      headers: { Cookie: cookie },
+    });
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("shell");
-    expect((await app.request("/api/nope")).status).toBe(404);
+    expect(
+      (await app.request("/api/nope", { headers: { Cookie: cookie } })).status,
+    ).toBe(404);
+    expect((await app.request("/api/nope")).status).toBe(401);
   });
 
   it("is lifted without a restart once the credentials are stored", async () => {
@@ -183,7 +191,10 @@ describe("setup gate", () => {
         updatedAt: 1,
       })
       .run();
-    expect((await app.request("/settings")).status).toBe(200);
+    const { cookie } = signIn(database.db);
+    expect(
+      (await app.request("/settings", { headers: { Cookie: cookie } })).status,
+    ).toBe(200);
   });
 });
 

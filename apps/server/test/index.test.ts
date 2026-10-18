@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
+import { signIn } from "./sign-in.js";
 import {
   createFakeGithub,
   FAKE_API_URL,
@@ -201,12 +202,31 @@ describe("process entry", () => {
 
   it("answers unknown /api routes in the error shape through the listener", async () => {
     stubEnv({ ...validEnv, ...githubEnv });
-    await start();
-    const response = await fetch(`http://127.0.0.1:${port}/api/nope`);
+    const entry = await start();
+    const response = await fetch(`http://127.0.0.1:${port}/api/nope`, {
+      headers: { Cookie: signIn(entry.database.db).cookie },
+    });
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },
     });
+  });
+
+  it("schedules the daily session cleanup", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const user = signIn(entry.database.db);
+    entry.database.sqlite
+      .prepare("UPDATE sessions SET expires_at = 1 WHERE user_id = ?")
+      .run(user.userId);
+    expect(entry.jobs.enqueue("sessions.cleanup", undefined)).toBe(true);
+    const deadline = Date.now() + 5000;
+    const count = () =>
+      entry.database.sqlite.prepare("SELECT count(*) FROM sessions").pluck();
+    while (count().get() !== 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(count().get()).toBe(0);
   });
 
   it("gates a fresh instance behind the setup token it logs at start", async () => {
@@ -264,7 +284,7 @@ describe("process entry", () => {
     const response = await fetch(`http://127.0.0.1:${port}/api/issues`, {
       redirect: "manual",
     });
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
     expect(output.join("")).not.toContain("setupToken");
     expect(rowsOf("app_config")).toBe(0);
   });

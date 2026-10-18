@@ -31,6 +31,7 @@ import { decrypt, encrypt } from "../src/security/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { createFakeGithub, FAKE_API_URL, FAKE_WEB_URL } from "./github-fake.js";
 import { githubEnv, SENTINEL, validEnv } from "./helpers.js";
+import { signIn as startSession } from "./sign-in.js";
 
 const ORIGIN = validEnv.CROSSBOARD_PUBLIC_URL;
 const APP_SECRET = validEnv.CROSSBOARD_APP_SECRET;
@@ -90,6 +91,7 @@ function build(env: Record<string, string> = {}) {
   const token = setup.start() ?? "";
   const app = createApp({
     logger,
+    db: database.db,
     github: createGithubClient({
       apiUrl: config.githubApiUrl,
       webUrl: config.githubWebUrl,
@@ -439,7 +441,10 @@ describe("GET /setup/callback", () => {
       });
       expect(response.status, `${method} ${path}`).toBe(404);
     }
-    expect((await app.request("/settings")).status).toBe(200);
+    const settings = await app.request("/settings", {
+      headers: { Cookie: startSession(database.db).cookie },
+    });
+    expect(settings.status).toBe(200);
     expect(conversions()).toHaveLength(1);
     expect(storedRows()).toHaveLength(1);
   });
