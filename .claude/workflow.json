@@ -41,6 +41,12 @@
     },
     {
       "paths": [
+        "e2e/**"
+      ],
+      "run": "pnpm --filter ./e2e lint && pnpm --filter ./e2e typecheck"
+    },
+    {
+      "paths": [
         "Dockerfile",
         "docker-compose*.yml",
         ".dockerignore"
@@ -131,7 +137,7 @@
       {
         "name": "area:web",
         "color": "5319e7",
-        "description": "React SPA: list, boards, detail panel — apps/web"
+        "description": "React SPA: list, boards, detail panel; e2e tests — apps/web, e2e"
       },
       {
         "name": "area:ci",
@@ -154,5 +160,25 @@
       "color": "5d4037",
       "description": "Needs the maintainer: GitHub App registration, Coolify, secrets, DNS"
     }
+  },
+  "readiness": {
+    "stale": [
+      {
+        "pattern": "Node(\\.js)? ?22",
+        "reason": "the runtime is Node 24 LTS (SPEC D-8)"
+      },
+      {
+        "pattern": "src/query",
+        "reason": "the filter engine lives only in packages/query (SPEC FR-21)"
+      },
+      {
+        "pattern": "user-to-server token.*(sync|fetch)|(sync|fetch).*user-to-server token",
+        "reason": "data is fetched with installation tokens; user tokens only for identity and access (SPEC D-4)"
+      },
+      {
+        "pattern": "nice-to-have",
+        "reason": "no optional requirements in v1; the dependency graph is required (SPEC D-6)"
+      }
+    ]
   }
 }
