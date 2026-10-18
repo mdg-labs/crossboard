@@ -3,12 +3,14 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
+import { createAccess, registerAccessJob } from "./access/index.js";
 import { createApp } from "./app.js";
 import {
   enqueueSessionCleanupAtStart,
   registerSessionCleanup,
 } from "./auth/sessions/index.js";
 import { createSetup } from "./auth/setup/index.js";
+import { createUserTokens } from "./auth/tokens.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
 import { createGithubClient } from "./github/index.js";
@@ -78,6 +80,21 @@ export const github = createGithubClient({
 
 export const setup = createSetup({ db: database.db, config, logger });
 setup.start();
+
+export const access = createAccess({
+  db: database.db,
+  github,
+  allowlist: setup.allowlist,
+  logger,
+  tokens: createUserTokens({
+    db: database.db,
+    github,
+    credentials: () => setup.credentials(),
+    appSecret: config.appSecret,
+    logger,
+  }),
+});
+registerAccessJob(jobs, access, database.db, logger);
 
 const app = createApp({
   logger,

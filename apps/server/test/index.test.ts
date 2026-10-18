@@ -8,6 +8,7 @@ import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
 import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
 import { openAndMigrate, schema } from "../src/db/index.js";
 import { addUser, signIn } from "./sign-in.js";
+import { accessHandlers, storeTokens } from "./access.js";
 import {
   createFakeGithub,
   FAKE_API_URL,
@@ -269,6 +270,64 @@ describe("process entry", () => {
         .pluck()
         .all(),
     ).toEqual([active.userId]);
+  });
+
+  it("schedules the hourly access computation for users with a live session", async () => {
+    const seed = openAndMigrate(dataDir);
+    const live = signIn(seed.db, addUser(seed.db, "alice").id);
+    const lapsed = addUser(seed.db, "bob");
+    createSession(seed.db, lapsed.id, Date.now() - SESSION_TTL_MS - 1);
+    storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, live.userId, {
+      access: "ghu_alice",
+    });
+    storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, lapsed.id, {
+      access: "ghu_bob",
+    });
+    seed.sqlite.close();
+
+    stubEnv({
+      ...validEnv,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const fake = createFakeGithub();
+    fake.listen();
+    fake.server.use(
+      ...accessHandlers({
+        ghu_alice: {
+          installations: [{ id: 1, login: "alice" }],
+          repos: {
+            1: [{ id: 10, nodeId: "R_10", owner: "alice", name: "notes" }],
+          },
+        },
+        ghu_bob: {
+          installations: [{ id: 2, login: "bob" }],
+          repos: {
+            2: [{ id: 20, nodeId: "R_20", owner: "bob", name: "secret" }],
+          },
+        },
+      }),
+    );
+    try {
+      const entry = await start();
+      expect(() => entry.jobs.schedule("access.compute", 1000)).toThrow(
+        /already scheduled/,
+      );
+      expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+      const access = () =>
+        entry.database.sqlite
+          .prepare(
+            "SELECT user_id, repo_id FROM user_repo_access ORDER BY user_id",
+          )
+          .all();
+      const deadline = Date.now() + 5000;
+      while (access().length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(access()).toEqual([{ user_id: live.userId, repo_id: "R_10" }]);
+    } finally {
+      fake.close();
+    }
   });
 
   it("gates a fresh instance behind the setup token it logs at start", async () => {

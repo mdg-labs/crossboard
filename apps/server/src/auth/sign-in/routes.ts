@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Logger } from "pino";
+import { createAccess } from "../../access/index.js";
 import { errorResponse } from "../../api/errors.js";
 import { schema, type Db } from "../../db/index.js";
 import { GithubError, type GithubClient } from "../../github/index.js";
@@ -11,6 +12,7 @@ import {
   type SessionCookieOptions,
 } from "../sessions/index.js";
 import type { Setup } from "../setup/index.js";
+import { createUserTokens } from "../tokens.js";
 import { isAllowedUser } from "./allowlist.js";
 import { clearOAuthState, issueOAuthState, matchOAuthState } from "./state.js";
 
@@ -41,6 +43,19 @@ export function createSignInRoutes({
   publicUrl,
 }: SignInRoutesOptions) {
   const cookieOptions = { publicUrl };
+  const access = createAccess({
+    db,
+    github,
+    allowlist: setup.allowlist,
+    logger,
+    tokens: createUserTokens({
+      db,
+      github,
+      credentials: () => setup.credentials(),
+      appSecret,
+      logger,
+    }),
+  });
 
   return new Hono()
     .get("/login", (c) => {
@@ -163,6 +178,16 @@ export function createSignInRoutes({
           .run();
         return { token: createSession(tx, row.id, now), userId: row.id };
       });
+      // A failure leaves the access computed before (none for a new user)
+      // until the next hourly run retries.
+      try {
+        await access.compute(signedIn.userId);
+      } catch (error) {
+        logger.error(
+          { err: error, userId: signedIn.userId },
+          "computing the user's access at sign-in failed",
+        );
+      }
       setSessionCookie(c, cookieOptions, signedIn.token);
       logger.info({ userId: signedIn.userId }, "user signed in");
       return c.redirect(sanitizeReturnPath(matched.returnPath), 302);
