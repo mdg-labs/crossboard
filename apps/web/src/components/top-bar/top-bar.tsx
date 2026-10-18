@@ -1,9 +1,9 @@
 import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Group } from "@/components/ui/group";
 import { Input } from "@/components/ui/input";
 import { Toolbar, ToolbarButton, ToolbarGroup } from "@/components/ui/toolbar";
+import { UserMenu } from "@/components/top-bar/user-menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function TopBar(): React.ReactElement {
@@ -38,15 +38,7 @@ export function TopBar(): React.ReactElement {
             </TooltipTrigger>
             <TooltipPopup>Sync status</TooltipPopup>
           </Tooltip>
-          <ToolbarButton
-            render={
-              <Button aria-label="User menu" size="icon-sm" variant="ghost" />
-            }
-          >
-            <Avatar className="size-6">
-              <AvatarFallback aria-hidden="true">?</AvatarFallback>
-            </Avatar>
-          </ToolbarButton>
+          <UserMenu />
         </ToolbarGroup>
       </Toolbar>
       <Group

@@ -9,6 +9,7 @@ import {
 import { TopBar } from "@/components/top-bar/top-bar";
 import { IndexRoute } from "@/routes/index";
 import { NotAllowedRoute } from "@/routes/not-allowed";
+import { SettingsRoute } from "@/routes/settings";
 import { SetupRoute } from "@/routes/setup";
 
 interface RouterContext {
@@ -42,6 +43,12 @@ const indexRoute = createRoute({
   component: IndexRoute,
 });
 
+const settingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings",
+  component: SettingsRoute,
+});
+
 const setupRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/setup",
@@ -55,7 +62,7 @@ const notAllowedRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([indexRoute]),
+  shellRoute.addChildren([indexRoute, settingsRoute]),
   setupRoute,
   notAllowedRoute,
 ]);

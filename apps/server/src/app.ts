@@ -71,7 +71,12 @@ export function createApp(options: AppOptions) {
     )
     .route(
       "/api",
-      createApi({ version: options.version, github: options.github }),
+      createApi({
+        version: options.version,
+        github: options.github,
+        db: options.db,
+        setup: options.setup,
+      }),
     );
 
   app.all("/api/*", notFound);
