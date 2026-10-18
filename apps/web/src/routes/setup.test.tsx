@@ -1,5 +1,6 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -169,5 +170,69 @@ describe("/setup", () => {
 
     expect(await screen.findByText(/setup session has expired/i)).toBeTruthy();
     expect(screen.getByLabelText("Setup token")).toBeTruthy();
+  });
+
+  it("makes step two submittable again when the page is restored from the back/forward cache", async () => {
+    const submit = vi
+      .spyOn(HTMLFormElement.prototype, "submit")
+      .mockImplementation(() => {});
+    let manifests = 0;
+    const fetchMock = stubFetch((path) =>
+      path === "/api/setup/token"
+        ? new Response(null, { status: 204 })
+        : Response.json({ ...manifestResponse, state: `state-${++manifests}` }),
+    );
+    await renderSetup();
+    await enterToken("right");
+    await screen.findByLabelText("App name");
+    const button = screen.getByRole("button", { name: "Continue to GitHub" });
+
+    fireEvent.click(button);
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(button.hasAttribute("data-loading")).toBe(true));
+
+    const restored = new Event("pageshow");
+    Object.defineProperty(restored, "persisted", { value: true });
+    act(() => {
+      window.dispatchEvent(restored);
+    });
+
+    await waitFor(() =>
+      expect(button.hasAttribute("data-loading")).toBe(false),
+    );
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(button);
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(fetchMock.mock.calls).toHaveLength(3);
+    const form = submit.mock.contexts[1] as HTMLFormElement;
+    expect(form.getAttribute("action")).toBe(
+      `${manifestResponse.url}?state=state-2`,
+    );
+  });
+
+  it("keeps the submission pending on a pageshow that is not a cache restore", async () => {
+    const submit = vi
+      .spyOn(HTMLFormElement.prototype, "submit")
+      .mockImplementation(() => {});
+    stubFetch((path) =>
+      path === "/api/setup/token"
+        ? new Response(null, { status: 204 })
+        : Response.json(manifestResponse),
+    );
+    await renderSetup();
+    await enterToken("right");
+    await screen.findByLabelText("App name");
+    const button = screen.getByRole("button", { name: "Continue to GitHub" });
+    fireEvent.click(button);
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+
+    const fresh = new Event("pageshow");
+    Object.defineProperty(fresh, "persisted", { value: false });
+    act(() => {
+      window.dispatchEvent(fresh);
+    });
+
+    expect(button.hasAttribute("data-loading")).toBe(true);
   });
 });

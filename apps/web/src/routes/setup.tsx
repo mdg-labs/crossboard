@@ -130,6 +130,15 @@ function AppStep({ onExpired }: { onExpired: () => void }) {
     },
   });
   const submission = create.data;
+  const { reset } = create;
+
+  useEffect(() => {
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) reset();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, [reset]);
 
   useEffect(() => {
     if (submission !== undefined) formRef.current?.submit();
