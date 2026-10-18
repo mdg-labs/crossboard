@@ -371,7 +371,7 @@ depends: [M1.4]
 **Acceptance criteria**
 - [ ] `apps/server/src/security/` encrypts with AES-256-GCM, a random 12-byte IV per value and a key derived from `CROSSBOARD_APP_SECRET` with HKDF-SHA256 (info `crossboard-encryption-v1`), stored as `v1:<iv>:<ciphertext>:<tag>` in base64url; tampered ciphertext and a different secret fail to decrypt (tests)
 - [ ] `apps/server/src/auth/credentials.ts` returns the App credentials from all six `GITHUB_*` variables when set, otherwise from `app_config`, otherwise nothing; with nothing, each start generates a random setup token, stores only its hash in `app_config` (replacing the previous one) and logs the token at `warn`
-- [ ] in that state every request except `/setup`, `/setup/*` (including `GET /setup/callback`), `/api/setup/*`, static assets and `/api/health` redirects to `/setup`
+- [ ] in that state every request except `/setup`, `/setup/*` (including `GET /setup/callback`), `/api/setup/*`, static assets and `/api/health` redirects to `/setup`; this gate runs before any session check
 - [ ] `POST /api/setup/token` with `{ token }` sets an HTTP-only `SameSite=Lax` cookie (`Secure` except on `http://localhost`), signed with an HMAC key derived from `CROSSBOARD_APP_SECRET` and valid 30 minutes; a wrong token answers `401` and sets nothing; the comparison is constant-time; a test asserts the `Set-Cookie` attributes
 - [ ] `apps/server/src/security/` provides the check that rejects a missing or foreign `Origin` (against `CROSSBOARD_PUBLIC_URL`) and a non-JSON body; `POST /api/setup/token` uses it (tests for both rejections)
 - [ ] Reachable via: `apps/server/src/app.ts` mounts the setup gate and `POST /api/setup/token`
@@ -401,7 +401,7 @@ depends: [M2.2, M2.3]
 - [ ] the manifest sets every field FR-48 lists, with `default_permissions` `issues: read`, `metadata: read` and `default_events` from SPEC §5.1; a test asserts the full manifest
 - [ ] `GET /setup/callback` rejects a missing or mismatched `state` and a missing setup cookie with no side effect; otherwise it exchanges the code via the manifest conversion and stores `id`, `slug`, `client_id`, `client_secret`, `webhook_secret` and `pem` encrypted in `app_config`, then redirects to `/settings`
 - [ ] a test with sentinel values proves `client_secret`, `webhook_secret` and `pem` are stored only as ciphertext and appear in no log line and no response
-- [ ] after a successful callback the setup routes answer `404` until the stored credentials are deleted
+- [ ] after a successful callback `/setup`, `/setup/*` and `/api/setup/*` answer `404` until the stored credentials are deleted (FR-49); with env credentials they always do
 - [ ] with all six `GITHUB_*` variables set, the credential accessor returns them and the setup routes are never served (FR-50); a test covers both sources
 - [ ] Reachable via: `apps/server/src/app.ts` mounts `POST /api/setup/manifest` and `GET /setup/callback`
 - [ ] the checks of workflow.json for the touched paths pass
@@ -416,7 +416,7 @@ depends: [M2.2, M2.3]
 id: M2.10
 parent: M2
 labels: [feat, area:web]
-depends: [M2.4, M1.8]
+depends: [M2.4, M2.5]
 ```
 
 **Summary** Add the SPA's `/setup` route: the operator enters the setup token, then the owning account and App name, and the page submits the manifest form to GitHub.
@@ -427,7 +427,7 @@ depends: [M2.4, M1.8]
 
 **Acceptance criteria**
 - [ ] step one posts the token to `POST /api/setup/token` and shows a wrong-token error; step two asks for the owning account and the App name (prefilled `Crossboard (<host>)`), calls `POST /api/setup/manifest` and submits the returned manifest as a form `POST` to the returned GitHub URL
-- [ ] both steps use the SPEC §10.1 components (Card, Form, Field, Input, Button) and show loading and error states (component tests)
+- [ ] both steps use the SPEC §10.1 components (Card, Form, Field, Input, Button) and show loading and error states; a component test proves a wrong token shows the error and stays on `/setup`
 - [ ] Reachable via: `apps/web/src/router.tsx` → `apps/web/src/routes/setup.tsx`
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -459,7 +459,7 @@ depends: [M2.1, M2.3, M1.8]
 - [ ] every `POST`, `PATCH` and `DELETE` except `/webhooks/github` goes through the existing `Origin`/JSON check (tests on a session route)
 - [ ] every response carries the CSP of SPEC §9.3
 - [ ] the server's SPA fallback answers a page request without a valid session with a redirect to `/auth/login?return=<path>`, except `/setup`, `/setup/*` and `/auth/*`; only same-origin relative paths are kept (tests: an exempt path, an absolute and a protocol-relative `return`)
-- [ ] the SPA's API client sends the browser to `/auth/login?return=<current path>` on any `401`
+- [ ] the SPA's API client sends the browser to `/auth/login?return=<current path>` on any `401`, except from `/api/setup/*`, whose `401` means a wrong setup token
 - [ ] Reachable via: `apps/server/src/app.ts` mounts the session and CSRF middleware, the SPA fallback redirect and `POST /auth/logout`; the API client in `apps/web/src/lib/`
 - [ ] the checks of workflow.json for the touched paths pass
 
@@ -727,9 +727,9 @@ depends: [M3.7, M2.7]
 **Acceptance criteria**
 - [ ] discovery calls `GET /installation/repositories` (installation token, paginated, ETag-cached) and upserts `repos` rows with owner, name, private flag and installation
 - [ ] one GraphQL query per up to 25 repos reads `isArchived`, `hasIssuesEnabled` and the open issue count; archived and issues-disabled repos get `skipped` with the reason; repos with zero open issues become `ready` without paging; the rest stay `pending` with `open_issue_count` set
-- [ ] discovery runs when an installation becomes active (called from the active-set recomputation in `apps/server/src/access/`) and at startup for every active installation, before any startup sync
+- [ ] discovery is a background job, enqueued when an installation becomes active (by the active-set recomputation in `apps/server/src/access/`) and at startup for every active installation, before any startup sync
 - [ ] an installation that stops being active is purged: its repos, their issues, labels and access rows are deleted, boards and saved views are untouched, and a user who had access to those repos sees none of them through the scoping helpers afterwards (test)
-- [ ] Reachable via: the active-set recomputation in `apps/server/src/access/` and `apps/server/src/index.ts` at startup call discovery
+- [ ] Reachable via: the active-set recomputation in `apps/server/src/access/` and `apps/server/src/index.ts` at startup enqueue discovery
 - [ ] the checks of workflow.json for the touched paths pass
 
 **Out of scope** Syncing issues (owned by "Sync a repository's open issues, labels and assignees"); installation and repository webhooks (owned by "Apply installation, repository and authorization webhooks").
@@ -755,7 +755,7 @@ depends: [M3.4]
 - [ ] one GraphQL query per page of 100 open issues with the full SPEC §5.3 selection
 - [ ] `issues` stores every scalar of SPEC §8.1 (including type name and color enum, milestone, `parent_id`, sub-issue total and completed, `blocked_by_total`, `blocking_total`); labels are stored per repo with color; assignees with avatar
 - [ ] the repo goes `pending` → `syncing` → `ready`, or `error` with the message after the client's retries fail; `last_full_sync_at` is set and `reconcile_since` is set to the sync's start time
-- [ ] when the sync completes the repo's issues are replaced in one transaction: open issues no longer returned are deleted
+- [ ] when the sync completes the repo's issues are replaced in one transaction: issues no longer returned are deleted
 - [ ] only repos of active installations are synced, and never an archived or issues-disabled one: a repo that discovery has not checked yet is checked first and marked `skipped` when it fails the check
 - [ ] each completed sync is logged at `info` with page count and total cost
 - [ ] at startup, after discovery, repos `pending` or `syncing` are (re)synced
@@ -808,12 +808,12 @@ depends: [M3.6]
 
 **Design references** SPEC §8.2, §5.3 (selection, `nodes(ids: [...])`), §6.2 (refetch semantics), §5.5 (transfers as delete plus new), FR-24, FR-25
 
-**Current state** the sync replaces a repo's issues, refs and edges in one transaction and simply deletes issues no longer returned.
+**Current state** the sync replaces a repo's issues, refs and edges in one transaction and deletes issues no longer returned inside it.
 
 **Acceptance criteria**
 - [ ] `apps/server/src/sync/remove.ts` removes an issue as closed (its row goes; its ref becomes `CLOSED`; edges where it blocks stay) or as gone (deleted, transferred or no longer readable: its row, its ref and every edge mentioning it go, and every synced issue on the other side is refetched)
-- [ ] `apps/server/src/sync/refetch.ts` refetches one or more issues by node id (batches of up to 50 via `nodes(ids: [...])`) with the SPEC §5.3 selection and updates each issue with its labels, assignees, refs and edges; a result that is closed is removed as closed, one that is null or unreadable as gone
-- [ ] issues a full sync no longer returns are looked up with that batch refetch and removed by these rules
+- [ ] `apps/server/src/sync/refetch.ts` refetches one or more issues by node id (batches of up to 50 via `nodes(ids: [...])`) with the SPEC §5.3 selection, grouping ids by the installation of their repo and using that installation's token, and updates each issue with its labels, assignees, refs and edges; a result that is closed is removed as closed, one that is null for its own installation as gone (test: a counterpart in another installation's repo is refetched with that installation's token, not removed)
+- [ ] the sync's replacing transaction no longer deletes dropped issues; it records their ids, and after it commits they are looked up with that batch refetch and removed by these rules
 - [ ] integration tests: a closed blocker stays struck through on the issue it blocked; a deleted cross-repo blocker disappears and the blocked issue's not-accessible count follows FR-24
 - [ ] Reachable via: the sync job from "Sync a repository's open issues, labels and assignees" calls both functions for dropped issues
 - [ ] the checks of workflow.json for the touched paths pass
@@ -1479,10 +1479,10 @@ depends: [M8.1, M3.4, M3.2, M8.4]
 
 **Design references** SPEC §6.2, FR-3, FR-7, FR-8, §8.2 (purging), D-7, §5.5 (`github_app_authorization` actions), CLAUDE.md `### Risk review` (cross-user isolation, tokens)
 
-**Current state** access is computed at sign-in and hourly; discovery and purging exist in `apps/server/src/sync/discovery.ts` and run when the active set changes; installations are recorded from access computation only.
+**Current state** access is computed at sign-in and hourly; discovery and purging exist in `apps/server/src/sync/discovery.ts` and run when the active set changes; the reconciliation job exists in `apps/server/src/sync/reconcile.ts`; installations are recorded from access computation only.
 
 **Acceptance criteria**
-- [ ] `installation` `created` records it and recomputes the active set (which runs discovery when it becomes active); `deleted` purges it and its repos; `suspend`/`unsuspend` set and clear its `suspended` flag, and `unsuspend` enqueues a reconciliation of its repos
+- [ ] `installation` `created` records it and recomputes the active set (which runs discovery when it becomes active); `deleted` purges it and its repos; `suspend`/`unsuspend` set and clear its `suspended` flag; `unsuspend` clears the flag first, then enqueues discovery for the installation (which re-queues its `pending` syncs) and a reconciliation of its ready repos
 - [ ] `installation_repositories` `added` runs discovery for the installation; `removed` purges those repos
 - [ ] `repository` `archived`/`deleted` purge the repo; `renamed`/`transferred` update owner and name, then recompute access; `unarchived` marks it `pending`; `privatized`/`publicized` update the flag and recompute access
 - [ ] `installation` and `installation_repositories` deliveries recompute access for every user with a live session, then the active set (FR-3, FR-8)
@@ -1515,7 +1515,7 @@ depends: [M8.2]
 **Acceptance criteria**
 - [ ] every `CROSSBOARD_RECONCILE_INTERVAL_MIN` minutes each ready repo is polled with `GET /repos/{o}/{r}/issues?state=all&since=<reconcile_since>&sort=updated&direction=asc&per_page=100`, following pagination
 - [ ] the first page sends `If-None-Match: <rest_etag>`; a `304` ends the round for that repo; the ETag is stored for the first page only and cleared whenever `reconcile_since` changes
-- [ ] pull requests are ignored; closed issues are removed as in SPEC §8.2; open ones are refetched by node id in batches of up to 50 via `nodes(ids: [...])`
+- [ ] pull requests are ignored; closed issues are removed as closed through the existing removal function; open ones are refetched through the existing batch refetch
 - [ ] `reconcile_since` advances to the newest `updated_at` seen, stored as GitHub's string; `last_reconciled_at` records each completed round
 - [ ] an integration test covers a `304` round, a changed issue, a closed issue and a pull request
 - [ ] Reachable via: `apps/server/src/index.ts` schedules the reconciliation job
@@ -1538,11 +1538,11 @@ depends: [M3.8]
 
 **Design references** SPEC §6.3 (daily full resync), §8.2, D-12, §5.5
 
-**Current state** the initial sync runs only for `pending` repos.
+**Current state** the full sync, including removal by the SPEC §8.2 rules, works for a `ready` repo, but nothing schedules it after the initial sync.
 
 **Acceptance criteria**
 - [ ] each ready repo is fully resynced once every 24 hours, with start times spread over the day rather than all at once
-- [ ] the resync removes issues deleted, transferred or closed without a webhook through the existing removal function, and picks up relation changes that did not change `updatedAt`
+- [ ] the scheduled resync reuses the existing full sync, which already removes issues deleted, transferred or closed without a webhook, and picks up relation changes that did not change `updatedAt`
 - [ ] after a resync, `issue_refs` rows referenced by no issue parent and no `issue_deps` row are deleted
 - [ ] Reachable via: `apps/server/src/index.ts` schedules the daily resync
 - [ ] the checks of workflow.json for the touched paths pass
@@ -1564,11 +1564,11 @@ depends: [M8.3, M8.5]
 
 **Design references** SPEC §6.2 (`suspend`/`unsuspend`), §6.5, §6.1, FR-42
 
-**Current state** jobs are marked background or interactive; the client tracks each installation's budget; the `suspended` flag is set and cleared by webhooks, and `unsuspend` enqueues a reconciliation; nothing acts on the flag or the budget.
+**Current state** jobs are marked background or interactive; the client tracks each installation's budget; the `suspended` flag is set and cleared by webhooks, and `unsuspend` enqueues discovery and a reconciliation; nothing acts on the flag or the budget.
 
 **Acceptance criteria**
 - [ ] the rule lives in `apps/server/src/jobs/` and applies to every job marked background, whatever item added it
-- [ ] a background job for a suspended installation is dropped; work resumes through the reconciliation that `unsuspend` already enqueues
+- [ ] a background job for a suspended installation is dropped; work resumes through the discovery and reconciliation that `unsuspend` already enqueues after clearing the flag
 - [ ] a background job for an installation below 10% remaining is deferred until that installation's reset time, then runs
 - [ ] interactive detail fetches are not paused by this rule and keep their 2% cut-off
 - [ ] a pause, a drop and a resume are logged at `info` with installation and reason
