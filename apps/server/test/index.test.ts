@@ -5,6 +5,12 @@ import { createServer, type Server } from "node:http";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
+import {
+  createFakeGithub,
+  FAKE_API_URL,
+  FAKE_WEB_URL,
+  USER_TOKEN,
+} from "./github-fake.js";
 
 let output: string[];
 let exit: ReturnType<typeof vi.spyOn>;
@@ -201,6 +207,27 @@ describe("process entry", () => {
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },
     });
+  });
+
+  it("creates the GitHub client from the configured base URLs", async () => {
+    stubEnv({
+      ...validEnv,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const fake = createFakeGithub();
+    fake.listen();
+    try {
+      const entry = await start();
+      expect(await entry.github.getUser(USER_TOKEN)).toMatchObject({
+        login: "octocat",
+      });
+      expect(fake.requests).toEqual([
+        { method: "GET", url: `${FAKE_API_URL}/user` },
+      ]);
+    } finally {
+      fake.close();
+    }
   });
 
   it("starts the job scheduler once the migrations are applied", async () => {

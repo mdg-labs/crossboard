@@ -6,6 +6,7 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
+import { createGithubClient } from "./github/index.js";
 import { createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
 import { readServerVersion } from "./version.js";
@@ -62,7 +63,18 @@ if (!existsSync(join(webRoot, "index.html"))) {
   );
 }
 
-const app = createApp({ logger, version: readServerVersion(), webRoot });
+export const github = createGithubClient({
+  apiUrl: config.githubApiUrl,
+  webUrl: config.githubWebUrl,
+  logger,
+});
+
+const app = createApp({
+  logger,
+  github,
+  version: readServerVersion(),
+  webRoot,
+});
 
 // Without the http2 option, serve() returns a plain http.Server.
 export const server = serve({ fetch: app.fetch, port: config.port }, (info) => {

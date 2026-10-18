@@ -9,6 +9,7 @@ import { z } from "zod";
 import { createErrorHandler, notFound } from "../src/api/errors.js";
 import { validate } from "../src/api/validator.js";
 import { createApp, type AppType } from "../src/app.js";
+import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
 
 let dir: string;
@@ -30,8 +31,14 @@ afterEach(() => {
 });
 
 function build(root = webRoot) {
+  const logger = createLogger("info", { write: (chunk) => logs.push(chunk) });
   return createApp({
-    logger: createLogger("info", { write: (chunk) => logs.push(chunk) }),
+    logger,
+    github: createGithubClient({
+      apiUrl: "https://api.github.test",
+      webUrl: "https://github.test",
+      logger,
+    }),
     version: "9.8.7",
     webRoot: root,
   });
