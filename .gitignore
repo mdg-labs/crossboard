@@ -14,3 +14,6 @@ data/
 .env
 .env.*
 !.env.example
+
+# local pnpm store (created when the install is on another filesystem)
+.pnpm-store/

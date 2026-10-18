@@ -8,6 +8,7 @@ export default defineConfig(
     "**/node_modules/",
     "**/dist/",
     "**/coverage/",
+    "**/.pnpm-store/",
     ".claude/",
     ".agents/",
     "skills-lock.json",
