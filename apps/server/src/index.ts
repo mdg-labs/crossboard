@@ -6,6 +6,7 @@ import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
+import { createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
 import { readServerVersion } from "./version.js";
 import type { Logger } from "pino";
@@ -49,6 +50,10 @@ logger.info(
   "crossboard configured",
 );
 
+// Started once the migrations are applied, so handlers can rely on the schema.
+export const jobs = createJobs({ logger });
+jobs.start();
+
 const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
 if (!existsSync(join(webRoot, "index.html"))) {
   logger.warn(
@@ -71,15 +76,22 @@ server.on("error", (error) => {
 
 // The container runs this process as PID 1, where an unhandled SIGTERM is
 // ignored and `docker stop` ends in a SIGKILL. Stop accepting connections, let
-// in-flight requests finish (cut off after a grace period shorter than
-// Docker's 10 s), then close the database so the WAL is checkpointed.
+// in-flight requests and running jobs finish (cut off after a grace period
+// shorter than Docker's 10 s), then close the database so the WAL is
+// checkpointed.
 const SHUTDOWN_GRACE_MS = 5_000;
 
 function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, "shutting down");
+  const jobsStopped = jobs.stop();
   server.close(() => {
-    database.sqlite.close();
-    process.exit(0);
+    const grace = new Promise<void>((resolve) => {
+      setTimeout(resolve, SHUTDOWN_GRACE_MS);
+    });
+    void Promise.race([jobsStopped, grace]).then(() => {
+      database.sqlite.close();
+      process.exit(0);
+    });
   });
   server.closeIdleConnections();
   setTimeout(() => server.closeAllConnections(), SHUTDOWN_GRACE_MS).unref();

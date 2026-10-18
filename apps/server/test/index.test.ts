@@ -9,7 +9,11 @@ import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
 let output: string[];
 let exit: ReturnType<typeof vi.spyOn>;
 let dataDir: string;
-let opened: { sqlite: Database.Database; server: Server }[];
+let opened: {
+  sqlite: Database.Database;
+  server: Server;
+  jobs: { stop(): Promise<void> };
+}[];
 let port: number;
 let signalListeners: Map<NodeJS.Signals, NodeJS.SignalsListener[]>;
 
@@ -33,8 +37,9 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const handle of opened) {
+    await handle.jobs.stop();
     handle.server.close();
     handle.server.closeAllConnections();
     handle.sqlite.close();
@@ -71,7 +76,11 @@ function stubEnv(env: Record<string, string>) {
 
 async function start() {
   const entry = await import("../src/index.js");
-  opened.push({ sqlite: entry.database.sqlite, server: entry.server });
+  opened.push({
+    sqlite: entry.database.sqlite,
+    server: entry.server,
+    jobs: entry.jobs,
+  });
   return entry;
 }
 
@@ -194,6 +203,23 @@ describe("process entry", () => {
     });
   });
 
+  it("starts the job scheduler once the migrations are applied", async () => {
+    stubEnv(validEnv);
+    const entry = await start();
+    expect(entry.jobs.started).toBe(true);
+    const ticks: number[] = [];
+    entry.jobs.register(
+      "probe",
+      () => void ticks.push(rowsOf("users") as number),
+    );
+    entry.jobs.schedule("probe", 10);
+    const deadline = Date.now() + 2_000;
+    while (ticks.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(ticks).toEqual([0]);
+  });
+
   it.each(SIGNALS)(
     "closes the listener and the database and exits 0 on %s",
     async (signal) => {
@@ -213,6 +239,7 @@ describe("process entry", () => {
       expect(await exited).toBe(0);
       expect(entry.server.listening).toBe(false);
       expect(entry.database.sqlite.open).toBe(false);
+      expect(entry.jobs.started).toBe(false);
       expect(output.join("")).toContain('"msg":"shutting down"');
       expect(process.listenerCount(signal)).toBe(
         signalListeners.get(signal)?.length,
@@ -245,5 +272,43 @@ describe("process entry", () => {
     } finally {
       holder.close();
     }
+  });
+});
+
+describe("process entry shutdown", () => {
+  it("waits for a running job before it closes the database", async () => {
+    stubEnv(validEnv);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const exited = new Promise<unknown>((resolve) => {
+      exit.mockImplementation((code?: string | number | null) => {
+        resolve(code);
+        return undefined as never;
+      });
+    });
+    const entry = await start();
+    if (!entry.server.listening) {
+      await new Promise((resolve) => entry.server.once("listening", resolve));
+    }
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    entry.jobs.register("slow", async () => {
+      started();
+      await held;
+    });
+    entry.jobs.enqueue("slow", null);
+    await running;
+
+    process.emit("SIGTERM", "SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(entry.database.sqlite.open).toBe(true);
+    release();
+    expect(await exited).toBe(0);
+    expect(entry.database.sqlite.open).toBe(false);
+    opened.pop();
   });
 });
