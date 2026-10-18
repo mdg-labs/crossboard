@@ -1,0 +1,16 @@
+# check-gh-rest.sh's exemption list for the files vendored with it.
+#
+# Each line is "<file, relative to the consumer repo root>::<substring of the
+# flagged line>". A line here is prose that names a forbidden `gh`
+# subcommand, `--paginate`, or a search path only to forbid it or explain why
+# gh-rest.sh avoids it — never a live call. The substring only silences the
+# one line it names, in the one file it names, so a real reintroduction
+# anywhere else still fails. A repo's own exemptions go in
+# .claude/gh-rest-allowlist.local.txt, never here.
+
+# gh-rest.sh explains the cloud proxy, which means naming what it refuses.
+.claude/scripts/gh-rest.sh::pages itself with `?per_page=100&page=N` instead, and never `--paginate`.
+.claude/scripts/gh-rest.sh::# `--paginate`.
+
+# The GitHub tracker doc lists what the proxy refuses, and what is forbidden.
+.claude/trackers/github.md::- Any direct `gh` call outside `.claude/scripts/`: a `gh issue`/`gh pr` subcommand
