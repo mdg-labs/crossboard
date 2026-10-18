@@ -5,7 +5,7 @@ import { schema, type Db } from "../../db/index.js";
 import { decrypt, encrypt } from "../../security/index.js";
 import type { GithubManifestConversion } from "../../github/index.js";
 import { resolveCredentials, storeCredentials } from "../credentials.js";
-import type { Config } from "../../config/index.js";
+import type { Config, GithubAppCredentials } from "../../config/index.js";
 
 export const SETUP_TOKEN_KEY = "setup_token_hash";
 
@@ -16,7 +16,13 @@ export interface SetupOptions {
   db: Db;
   config: Pick<
     Config,
-    "github" | "appSecret" | "publicUrl" | "webhooks" | "githubWebUrl"
+    | "github"
+    | "appSecret"
+    | "publicUrl"
+    | "webhooks"
+    | "githubWebUrl"
+    | "allowedUsers"
+    | "allowedOrgs"
   >;
   logger: Logger;
 }
@@ -35,6 +41,13 @@ export interface Setup {
     publicUrl: string;
     webhooks: boolean;
     githubWebUrl: string;
+  };
+  /** The App credentials in effect now, else null while setup is required. */
+  credentials(): GithubAppCredentials | null;
+  /** `CROSSBOARD_ALLOWED_USERS` and `CROSSBOARD_ALLOWED_ORGS`, lowercased (FR-1). */
+  readonly allowlist: {
+    readonly users: readonly string[];
+    readonly orgs: readonly string[];
   };
   /**
    * Stores the converted App's credentials encrypted, which closes setup.
@@ -63,6 +76,10 @@ export function createSetup({ db, config, logger }: SetupOptions): Setup {
       webhooks: config.webhooks,
       githubWebUrl: config.githubWebUrl,
     },
+
+    credentials: () => resolveCredentials({ db, config, logger }),
+
+    allowlist: { users: config.allowedUsers, orgs: config.allowedOrgs },
 
     complete(app) {
       if (!isRequired()) {

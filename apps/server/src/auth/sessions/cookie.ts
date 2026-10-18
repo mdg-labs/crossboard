@@ -9,7 +9,7 @@ export interface SessionCookieOptions {
   publicUrl: string;
 }
 
-const isLocalHttp = (publicUrl: string) => {
+export const isLocalHttp = (publicUrl: string) => {
   const url = new URL(publicUrl);
   return url.protocol === "http:" && url.hostname === "localhost";
 };

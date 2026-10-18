@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
 import { IndexRoute } from "@/routes/index";
+import { NotAllowedRoute } from "@/routes/not-allowed";
 import { SetupRoute } from "@/routes/setup";
 
 interface RouterContext {
@@ -47,9 +48,16 @@ const setupRoute = createRoute({
   component: SetupRoute,
 });
 
+const notAllowedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/not-allowed",
+  component: NotAllowedRoute,
+});
+
 const routeTree = rootRoute.addChildren([
   shellRoute.addChildren([indexRoute]),
   setupRoute,
+  notAllowedRoute,
 ]);
 
 export function createAppRouter(options: {

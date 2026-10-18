@@ -10,6 +10,7 @@ import {
   setupGate,
   type Setup,
 } from "./auth/setup/index.js";
+import { createSignInRoutes } from "./auth/sign-in/index.js";
 import {
   createAuthRoutes,
   requireApiSession,
@@ -58,6 +59,16 @@ export function createApp(options: AppOptions) {
       }),
     )
     .route("/auth", createAuthRoutes(sessionOptions))
+    .route(
+      "/auth",
+      createSignInRoutes({
+        ...sessionOptions,
+        github: options.github,
+        setup: options.setup,
+        logger: options.logger,
+        appSecret: options.appSecret,
+      }),
+    )
     .route(
       "/api",
       createApi({ version: options.version, github: options.github }),

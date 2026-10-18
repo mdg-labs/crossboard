@@ -6,6 +6,7 @@ export {
 } from "./cleanup.js";
 export {
   clearSessionCookie,
+  isLocalHttp,
   issueSession,
   readSessionCookie,
   SESSION_COOKIE,

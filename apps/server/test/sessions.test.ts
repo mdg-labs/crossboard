@@ -568,7 +568,7 @@ describe("SPA fallback without a session", () => {
       expect(await response.text(), path).toContain("shell");
     }
     const app = build();
-    for (const path of ["/auth/login", "/auth/callback?code=1", "/auth/x/y"]) {
+    for (const path of ["/auth/not-allowed", "/auth/x/y"]) {
       const response = await app.request(path);
       expect(response.status, path).toBe(200);
       expect(await response.text(), path).toContain("shell");

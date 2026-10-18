@@ -25,7 +25,7 @@ export const hashToken = (token: string) =>
 
 /** Stores a new session and returns the raw token for the cookie. */
 export function createSession(
-  db: Db,
+  db: Pick<Db, "insert">,
   userId: number,
   now: number = Date.now(),
 ): string {
