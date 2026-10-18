@@ -480,7 +480,8 @@ class GhError(RuntimeError):
 
 # A 403 is retried only when GitHub says it is a rate or abuse limit; any other
 # 403 (missing scope, no access) is permanent and fails at once.
-RETRYABLE = re.compile(r"rate limit|secondary|abuse|HTTP 429|HTTP 5\d\d|timeout|connection", re.I)
+RETRYABLE = re.compile(r"rate limit|secondary|abuse|HTTP 429|HTTP 5\d\d|timeout|timed out|deadline exceeded"
+                       r"|connection|reset by peer|EOF", re.I)
 
 
 def run(args: list[str], what: str, retry: bool = True) -> str:
@@ -520,7 +521,8 @@ def create_issue(ident: str, cmd: list[str]) -> dict:
         try:
             return gh_rest(*cmd, retry=False)  # type: ignore[return-value]
         except GhError as exc:
-            if attempt == 5:
+            # A plain rejection (validation, permission) never wrote anything.
+            if attempt == 5 or not RETRYABLE.search(str(exc)):
                 raise
             wait = min(30 * 2 ** attempt, 600)
             print(f"  create {ident} failed; checking whether it landed, then retrying in {wait}s", flush=True)
@@ -528,15 +530,18 @@ def create_issue(ident: str, cmd: list[str]) -> dict:
             found = find_by_marker(ident)
             if found:
                 return found
-            if not RETRYABLE.search(str(exc)):
-                raise
     raise GhError(f"create {ident}: gave up")
 
 
 def create_milestone(title: str) -> None:
-    # The one direct call: gh-rest.sh has no milestone subcommand.
-    run(["gh", "api", "--method", "POST", f"repos/{REPO}/milestones", "-f", f"title={title}"],
-        f"create milestone '{title}'")
+    # The one direct call: gh-rest.sh has no milestone subcommand. A retry after
+    # a write that landed gets "already_exists", which is success here.
+    try:
+        run(["gh", "api", "--method", "POST", f"repos/{REPO}/milestones", "-f", f"title={title}"],
+            f"create milestone '{title}'")
+    except GhError as exc:
+        if "already_exists" not in str(exc):
+            raise
 
 
 def set_status(n: int, status: str) -> None:
