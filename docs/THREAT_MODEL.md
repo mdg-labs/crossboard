@@ -107,6 +107,7 @@ Risks accepted on purpose. A report that only restates one of these is not a fin
 - **R9 Sanitized GitHub HTML can still link or load images from the web.** Allowed `https` images and `http`/`https` links can leak a viewer's IP address and timing to the host an issue author chose. Reason: GitHub's own rendering behaves the same way; the CSP limits image hosts to GitHub's content domains.
 - **R10 Memory and session state are per process.** Budget counters, the refresh limiter and queued jobs are in memory and lost on restart; there is no horizontal scaling. Reason: one-process design for v1.
 - **R11 Private-repository image URLs in cached HTML expire.** Cached detail HTML is refetched after ten minutes for this reason; a stale image may break. Reason: GitHub-side behavior.
+- **R12 A replayed genuine webhook delivery is processed again.** Deliveries are not deduplicated by `X-GitHub-Delivery`, so a captured delivery with a valid signature passes T4 when sent again. Its effect is that of the original event applied a second time: a refetch (debounced and deduplicated per issue, SPEC §6.2), or an old removal or purge that leaves the issue or repository missing until it is synced again from GitHub. Reason: capturing a delivery needs the TLS path between GitHub and the instance, which is the operator's (2.7) or a plain-HTTP deployment (R7); GitHub's own redelivery is available only to the App owner, who is the operator.
 
 ## 6. Severity rubric
 
