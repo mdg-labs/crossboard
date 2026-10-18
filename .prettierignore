@@ -1,0 +1,11 @@
+.claude/
+.agents/
+skills-lock.json
+pnpm-lock.yaml
+apps/web/src/components/ui/
+apps/server/src/db/migrations/
+
+# hand-formatted documents and config owned outside the scaffold
+CLAUDE.md
+docs/SPEC.md
+.coderabbit.yaml

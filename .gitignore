@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+.vite/
+
+# local data directories and databases
+data/
+*.db
+*.db-shm
+*.db-wal
+
+.env
+.env.*
+!.env.example
