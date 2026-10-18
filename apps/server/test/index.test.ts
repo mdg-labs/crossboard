@@ -200,13 +200,73 @@ describe("process entry", () => {
   });
 
   it("answers unknown /api routes in the error shape through the listener", async () => {
-    stubEnv(validEnv);
+    stubEnv({ ...validEnv, ...githubEnv });
     await start();
     const response = await fetch(`http://127.0.0.1:${port}/api/nope`);
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },
     });
+  });
+
+  it("gates a fresh instance behind the setup token it logs at start", async () => {
+    stubEnv(validEnv);
+    await start();
+
+    const logged = output
+      .join("")
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            level: number;
+            msg: string;
+            setupToken?: string;
+          },
+      )
+      .find((record) => record.setupToken !== undefined);
+    expect(logged?.level).toBe(40);
+    const token = logged?.setupToken ?? "";
+    expect(token).not.toBe("");
+
+    const base = `http://127.0.0.1:${port}`;
+    const redirect = await fetch(`${base}/api/issues`, { redirect: "manual" });
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get("location")).toBe("/setup");
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
+
+    const headers = {
+      Origin: validEnv.CROSSBOARD_PUBLIC_URL,
+      "Content-Type": "application/json",
+    };
+    const wrong = await fetch(`${base}/api/setup/token`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ token: "wrong" }),
+    });
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.get("set-cookie")).toBeNull();
+
+    const right = await fetch(`${base}/api/setup/token`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ token }),
+    });
+    expect(right.status).toBe(204);
+    expect(right.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(rowsOf("app_config")).toBe(1);
+  });
+
+  it("serves normally and logs no setup token when the environment has the App credentials", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    await start();
+    const response = await fetch(`http://127.0.0.1:${port}/api/issues`, {
+      redirect: "manual",
+    });
+    expect(response.status).toBe(404);
+    expect(output.join("")).not.toContain("setupToken");
+    expect(rowsOf("app_config")).toBe(0);
   });
 
   it("creates the GitHub client from the configured base URLs", async () => {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
+import { createSetup } from "./auth/setup/index.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
 import { createGithubClient } from "./github/index.js";
@@ -69,11 +70,17 @@ export const github = createGithubClient({
   logger,
 });
 
+export const setup = createSetup({ db: database.db, config, logger });
+setup.start();
+
 const app = createApp({
   logger,
   github,
   version: readServerVersion(),
   webRoot,
+  setup,
+  appSecret: config.appSecret,
+  publicUrl: config.publicUrl,
 });
 
 // Without the http2 option, serve() returns a plain http.Server.

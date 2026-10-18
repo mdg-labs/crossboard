@@ -9,14 +9,20 @@ import { z } from "zod";
 import { createErrorHandler, notFound } from "../src/api/errors.js";
 import { validate } from "../src/api/validator.js";
 import { createApp, type AppType } from "../src/app.js";
+import { createSetup } from "../src/auth/setup/index.js";
+import { loadConfig } from "../src/config/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
+import { createTestDatabase, type TestDatabase } from "./database.js";
+import { githubEnv, validEnv } from "./helpers.js";
 
 let dir: string;
 let webRoot: string;
 let logs: string[];
+let database: TestDatabase;
 
 beforeEach(() => {
+  database = createTestDatabase();
   dir = mkdtempSync(join(tmpdir(), "crossboard-app-"));
   webRoot = join(dir, "dist");
   mkdirSync(join(webRoot, "assets"), { recursive: true });
@@ -27,12 +33,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  database.cleanup();
   rmSync(dir, { recursive: true, force: true });
 });
 
 function build(root = webRoot) {
   const logger = createLogger("info", { write: (chunk) => logs.push(chunk) });
+  const config = loadConfig({ ...validEnv, ...githubEnv });
   return createApp({
+    setup: createSetup({ db: database.db, config, logger }),
+    appSecret: config.appSecret,
+    publicUrl: config.publicUrl,
     logger,
     github: createGithubClient({
       apiUrl: "https://api.github.test",
