@@ -49,7 +49,7 @@ A person who can open pull requests or issues against the Crossboard source repo
 
 The person who deploys and runs the instance. **Can by design:** read and set every environment variable including `CROSSBOARD_APP_SECRET` and the GitHub App credentials; read and change the database file and the data volume; read logs; edit the allowlists; delete stored credentials to re-run setup; run any code on the host and replace the image; see the setup token in the startup log. Everything this attacker can do with those powers is **by design and never a finding**. Their mistakes are also out of scope (an `http://` public URL, a weak `CROSSBOARD_APP_SECRET` that still satisfies the length check, exposing the data volume). A defect is only in scope if it lets a lower attacker obtain operator powers, or if the product leaks operator-held secrets to a lower attacker.
 
-GitHub itself is trusted to authenticate users, sign webhooks and answer API calls truthfully. Its *content* (issue text, rendered HTML, names) is written by 2.5 and is not trusted.
+GitHub itself is trusted to authenticate users, sign webhooks and answer API calls truthfully. Its _content_ (issue text, rendered HTML, names) is written by 2.5 and is not trusted.
 
 ## 3. Entry points, mapped to code
 
