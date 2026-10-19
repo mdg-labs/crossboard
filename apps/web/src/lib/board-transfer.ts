@@ -1,34 +1,6 @@
 import { api } from "@/lib/api";
 import type { Board } from "@/lib/boards";
-import { ApiError } from "@/lib/views";
-
-async function failure(response: Response): Promise<ApiError> {
-  try {
-    const body: unknown = await response.json();
-    if (
-      typeof body === "object" &&
-      body !== null &&
-      "error" in body &&
-      typeof body.error === "object" &&
-      body.error !== null &&
-      "message" in body.error &&
-      typeof body.error.message === "string"
-    ) {
-      const code =
-        "code" in body.error && typeof body.error.code === "string"
-          ? body.error.code
-          : null;
-      return new ApiError(response.status, code, body.error.message);
-    }
-  } catch {
-    // The body is not the API's error shape; fall back to the status.
-  }
-  return new ApiError(
-    response.status,
-    null,
-    `The server answered ${response.status}.`,
-  );
-}
+import { failure } from "@/lib/views";
 
 /** A file name made of the board's name, safe on common file systems. */
 export function exportFileName(name: string): string {

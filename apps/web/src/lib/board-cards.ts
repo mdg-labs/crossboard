@@ -2,7 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 import type { InferResponseType } from "hono/client";
 import { api } from "@/lib/api";
 import { parseIndexSearch } from "@/lib/issues";
-import { ApiError } from "@/lib/views";
+import { failure } from "@/lib/views";
 
 const cardsRoute = api.api.boards[":id"].cards.$get;
 
@@ -27,34 +27,6 @@ export function parseBoardSearch(search: Record<string, unknown>): BoardSearch {
 export function boardPathId(pathname: string): number | null {
   const id = /^\/b\/([1-9][0-9]{0,15})\/?$/.exec(pathname)?.[1];
   return id === undefined ? null : Number(id);
-}
-
-async function failure(response: Response): Promise<ApiError> {
-  try {
-    const body: unknown = await response.json();
-    if (
-      typeof body === "object" &&
-      body !== null &&
-      "error" in body &&
-      typeof body.error === "object" &&
-      body.error !== null &&
-      "message" in body.error &&
-      typeof body.error.message === "string"
-    ) {
-      const code =
-        "code" in body.error && typeof body.error.code === "string"
-          ? body.error.code
-          : null;
-      return new ApiError(response.status, code, body.error.message);
-    }
-  } catch {
-    // The body is not the API's error shape; fall back to the status.
-  }
-  return new ApiError(
-    response.status,
-    null,
-    `The server answered ${response.status}.`,
-  );
 }
 
 /** `GET /api/boards/:id/cards?q=` (SPEC §7.4): every placed card of the board. */
