@@ -41,7 +41,10 @@ afterEach(() => {
 });
 
 function build(env: Record<string, string> = validEnv) {
-  const config: Config = loadConfig(env);
+  const config: Config = loadConfig({
+    ...env,
+    CROSSBOARD_DATA_DIR: database.dir,
+  });
   const logger = createLogger("silent");
   const setup = createSetup({ db: database.db, config, logger });
   token = setup.start() ?? "";

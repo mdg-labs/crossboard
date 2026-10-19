@@ -55,6 +55,54 @@ export interface FakeGithub {
 const USER_TOKEN_PREFIX = "ghu_e2e_";
 const REFRESH_TOKEN_PREFIX = "ghr_e2e_";
 const INSTALLATION_TOKEN_PREFIX = "ghs_e2e_";
+interface AnswerByVariables {
+  answerBy: string[];
+  answers: Record<string, unknown>;
+}
+
+interface NodesByIds {
+  nodesBy: string;
+  rateLimit?: unknown;
+  nodes: Record<string, unknown>;
+}
+
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/** The body a fixture answers with for these variables (see `fixtures/graphql/README.md`). */
+function fixtureBody(
+  name: string,
+  fixture: unknown,
+  variables: Record<string, unknown>,
+): unknown {
+  if (isObject(fixture) && "answerBy" in fixture) {
+    const { answerBy, answers } = fixture as unknown as AnswerByVariables;
+    const key = answerBy
+      .map((variable) => String(variables[variable]))
+      .join("/");
+    if (!Object.hasOwn(answers, key)) {
+      throw new HttpError(404, `No GraphQL fixture for ${name} with ${key}`);
+    }
+    return answers[key];
+  }
+  if (isObject(fixture) && "nodesBy" in fixture) {
+    const { nodesBy, rateLimit, nodes } = fixture as unknown as NodesByIds;
+    const ids = variables[nodesBy];
+    if (!Array.isArray(ids)) {
+      throw new HttpError(400, `${name} needs the ${nodesBy} variable`);
+    }
+    return {
+      data: {
+        ...(rateLimit === undefined ? {} : { rateLimit }),
+        nodes: ids.map((id) =>
+          typeof id === "string" && Object.hasOwn(nodes, id) ? nodes[id] : null,
+        ),
+      },
+    };
+  }
+  return fixture;
+}
+
 const OPERATION_NAME = /^[_A-Za-z][_0-9A-Za-z]*$/;
 const OPERATION_IN_QUERY = /\bquery\s+([_A-Za-z]\w*)/;
 
@@ -276,13 +324,14 @@ export async function startFakeGithub(
     if (name === undefined || !OPERATION_NAME.test(name)) {
       throw new HttpError(400, "Anonymous GraphQL operations are not served");
     }
-    let body: unknown;
+    let fixture: unknown;
     try {
-      body = readFixture<unknown>(`graphql/${name}.json`);
+      fixture = readFixture<unknown>(`graphql/${name}.json`);
     } catch {
       throw new HttpError(404, `No GraphQL fixture for operation ${name}`);
     }
-    send(res, 200, body);
+    const variables = isObject(params.variables) ? params.variables : {};
+    send(res, 200, fixtureBody(name, fixture, variables));
   }
 
   async function route(

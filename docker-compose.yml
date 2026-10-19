@@ -1,6 +1,9 @@
 # Example deployment. Replace every <...> placeholder before starting; the server
 # refuses to start while CROSSBOARD_PUBLIC_URL or CROSSBOARD_APP_SECRET still hold
 # a placeholder. Generate the secret with `openssl rand -hex 32`.
+# On the first start there is no GitHub App yet and /setup asks for a setup
+# token. The server writes it to /data/setup-token (mode 0600), not to the
+# log; read it with `docker compose exec crossboard cat /data/setup-token`.
 services:
   crossboard:
     build: .

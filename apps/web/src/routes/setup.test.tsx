@@ -55,6 +55,15 @@ async function enterToken(token: string) {
 }
 
 describe("/setup", () => {
+  it("tells the operator to read the token from the data directory file", async () => {
+    stubFetch(() => new Response(null, { status: 204 }));
+    await renderSetup();
+    expect(
+      screen.getByText(/docker exec <container> cat \/data\/setup-token/),
+    ).toBeTruthy();
+    expect(screen.queryByText(/server logged/i)).toBeNull();
+  });
+
   it("shows the error for a wrong token and stays on /setup", async () => {
     const fetchMock = stubFetch(() =>
       Response.json(

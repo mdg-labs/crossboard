@@ -99,7 +99,12 @@ export const github = createGithubClient({
 });
 
 export const setup = createSetup({ db: database.db, config, logger });
-setup.start();
+try {
+  setup.start();
+} catch (error) {
+  logger.fatal({ err: error }, "failed to write the setup token file");
+  process.exit(1);
+}
 
 // What the sync jobs and the routes that read GitHub data fetch through.
 export const installations = createInstallationClient({

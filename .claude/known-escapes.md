@@ -30,6 +30,10 @@ existing line by adding its PR number.
 - **Lost diagnostics** — a test-harness container started with `--rm`, so one that crashes at startup is gone before its logs are read — PR 76
 - **Unpinned coupled version** — a dependency whose version must equal one pinned elsewhere in CI (the Playwright client vs the `run-server` image) declared with a range, so a lockfile refresh breaks every run — PR 76
 
+## Web
+
+- **Offset paging duplicates** — pages fetched by offset over a list whose order can change between requests are concatenated as they arrive, so a row that moved comes back twice with the same React key — PR 88
+
 ## Threat model
 
 - **Coverage gap** — an attacker capability or entry point named in the threat model (a replayed delivery, pull-request code on CI) that no invariant in §4 or residual in §5 answers — PR 68

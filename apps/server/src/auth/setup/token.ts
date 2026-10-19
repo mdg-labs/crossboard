@@ -1,5 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Logger } from "pino";
 import { schema, type Db } from "../../db/index.js";
 import { decrypt, encrypt } from "../../security/index.js";
@@ -8,6 +10,7 @@ import { resolveCredentials, storeCredentials } from "../credentials.js";
 import type { Config, GithubAppCredentials } from "../../config/index.js";
 
 export const SETUP_TOKEN_KEY = "setup_token_hash";
+const SETUP_TOKEN_FILE = "setup-token";
 
 const hashToken = (token: string) =>
   createHash("sha256").update(token).digest();
@@ -23,6 +26,7 @@ export interface SetupOptions {
     | "githubWebUrl"
     | "allowedUsers"
     | "allowedOrgs"
+    | "dataDir"
   >;
   logger: Logger;
 }
@@ -31,8 +35,10 @@ export interface Setup {
   /** True while no App credentials exist, in the environment or stored. */
   isRequired(): boolean;
   /**
-   * Generates this start's setup token, replacing the stored hash, and logs
-   * it. Does nothing (returns null) when the credentials already exist.
+   * Generates this start's setup token, replacing the stored hash, and writes
+   * it to a 0600 file in the data directory, logging only the file's path.
+   * Throws when the file cannot be written. With the credentials already
+   * present it removes a leftover file and returns null.
    */
   start(): string | null;
   verify(token: string): boolean;
@@ -50,7 +56,8 @@ export interface Setup {
     readonly orgs: readonly string[];
   };
   /**
-   * Stores the converted App's credentials encrypted, which closes setup.
+   * Stores the converted App's credentials encrypted, which closes setup, and
+   * removes the setup token file.
    * Returns false, writing nothing, when credentials exist already.
    */
   complete(app: GithubManifestConversion): boolean;
@@ -59,6 +66,32 @@ export interface Setup {
 export function createSetup({ db, config, logger }: SetupOptions): Setup {
   // Credentials are only ever removed by the operator, who then restarts.
   let configured = false;
+  const tokenFile = join(config.dataDir, SETUP_TOKEN_FILE);
+
+  // A file left behind holds a token that no longer opens anything.
+  const removeTokenFile = () => {
+    try {
+      rmSync(tokenFile, { force: true });
+    } catch (error) {
+      logger.warn(
+        { err: error, path: tokenFile },
+        "the setup token file could not be removed",
+      );
+    }
+  };
+
+  // The temporary file is private from creation, and the rename replaces an
+  // earlier token file in one step.
+  const writeTokenFile = (token: string) => {
+    const temporary = `${tokenFile}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      writeFileSync(temporary, `${token}\n`, { mode: 0o600, flag: "wx" });
+      renameSync(temporary, tokenFile);
+    } catch (error) {
+      rmSync(temporary, { force: true });
+      throw error;
+    }
+  };
 
   const isRequired = () => {
     if (configured) {
@@ -96,11 +129,13 @@ export function createSetup({ db, config, logger }: SetupOptions): Setup {
           webhookSecret: app.webhookSecret,
         },
       );
+      removeTokenFile();
       return true;
     },
 
     start() {
       if (!isRequired()) {
+        removeTokenFile();
         return null;
       }
       const token = randomBytes(32).toString("base64url");
@@ -116,9 +151,10 @@ export function createSetup({ db, config, logger }: SetupOptions): Setup {
           set: { valueEnc, updatedAt },
         })
         .run();
+      writeTokenFile(token);
       logger.warn(
-        { setupToken: token },
-        `no GitHub App is configured; open ${config.publicUrl}/setup and enter this setup token`,
+        { path: tokenFile },
+        `no GitHub App is configured; open ${config.publicUrl}/setup and enter the setup token from ${tokenFile}`,
       );
       return token;
     },

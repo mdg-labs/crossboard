@@ -1,3 +1,4 @@
+import type { QueryError } from "@crossboard/query";
 import type { Context, ErrorHandler, NotFoundHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -27,6 +28,19 @@ export function errorResponse(
 ) {
   const body: ApiErrorBody = { error: { code, message } };
   return c.json(body, status);
+}
+
+/** The `400` for a filter that does not parse, with the range to underline (SPEC FR-18). */
+export function invalidQueryResponse(c: Context, error: QueryError) {
+  const body: ApiErrorBody & { error: { start: number; end: number } } = {
+    error: {
+      code: "invalid_query",
+      message: error.message,
+      start: error.start,
+      end: error.end,
+    },
+  };
+  return c.json(body, 400);
 }
 
 export const notFound: NotFoundHandler = (c) =>

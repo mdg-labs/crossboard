@@ -110,3 +110,60 @@ test.describe("the fake GraphQL endpoint accepts only tokens it issued", () => {
     });
   }
 });
+
+test.describe("the fake GraphQL endpoint answers by variables", () => {
+  const ask = async (
+    operation: string,
+    variables: Record<string, unknown>,
+  ): Promise<Response> =>
+    fetch(`${fake.url}/graphql`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer ghs_e2e_1001",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        query: `query ${operation} { viewer { id } }`,
+        variables,
+      }),
+    });
+
+  test("the open issues of the repository named by the variables", async () => {
+    const response = await ask("OpenIssuesPage", {
+      owner: "acme",
+      name: "rocket",
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { repository: { issues: { nodes: { number: number }[] } } };
+    };
+    expect(body.data.repository.issues.nodes.map((n) => n.number)).toEqual([
+      1, 2,
+    ]);
+  });
+
+  test("a repository without a fixture is refused", async () => {
+    const response = await ask("OpenIssuesPage", {
+      owner: "acme",
+      name: "missing",
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  test("the node of each requested id, null for an unknown one", async () => {
+    const response = await ask("RepositoryStates", {
+      ids: ["R_kgDOE2E001", "R_unknown"],
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      data: { nodes: ({ id: string } | null)[] };
+    };
+    expect(body.data.nodes).toEqual([
+      expect.objectContaining({ id: "R_kgDOE2E001" }),
+      null,
+    ]);
+  });
+});

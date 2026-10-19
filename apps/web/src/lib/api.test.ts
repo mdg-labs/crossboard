@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, signInUrl, withSignInRedirect } from "@/lib/api";
+import {
+  api,
+  signInUrl,
+  withJsonContentType,
+  withSignInRedirect,
+} from "@/lib/api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -77,5 +82,46 @@ describe("sign-in redirect on 401", () => {
     );
     await api.api.health.$get();
     expect(assign).toHaveBeenCalledWith("/auth/login?return=%2F");
+  });
+});
+
+describe("JSON content type on state-changing requests", () => {
+  const sent = async (init?: RequestInit, input = "/api/views/1") => {
+    const seen: { headers: Headers }[] = [];
+    const call = withJsonContentType(async (_input, options) => {
+      seen.push({ headers: new Headers(options?.headers) });
+      return new Response(null, { status: 204 });
+    });
+    await call(input, init);
+    return seen[0]?.headers.get("Content-Type") ?? null;
+  };
+
+  it.each(["POST", "PATCH", "PUT", "DELETE"])(
+    "adds it to a %s without a body",
+    async (method) => {
+      expect(await sent({ method })).toBe("application/json");
+    },
+  );
+
+  it("leaves reads alone and keeps a type that is already set", async () => {
+    expect(await sent({ method: "GET" })).toBeNull();
+    expect(await sent()).toBeNull();
+    expect(
+      await sent({ method: "POST", headers: { "Content-Type": "text/plain" } }),
+    ).toBe("text/plain");
+  });
+
+  it("sends a DELETE through the typed client with it", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.api.views[":id"].$delete({ param: { id: "3" } });
+
+    const init = (
+      fetchMock.mock.calls[0] as unknown as [unknown, RequestInit]
+    )[1];
+    expect(new Headers(init.headers).get("Content-Type")).toBe(
+      "application/json",
+    );
   });
 });

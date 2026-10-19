@@ -34,6 +34,32 @@ export function withSignInRedirect(
   };
 }
 
+const BODYLESS_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
+/**
+ * Marks every state-changing request as JSON, which the server's CSRF guard
+ * requires (SPEC §9.3) even when the request has no body, such as a `DELETE`.
+ */
+export function withJsonContentType(fetchImpl: typeof fetch): typeof fetch {
+  return (input, init) => {
+    const method = (
+      init?.method ?? (input instanceof Request ? input.method : "GET")
+    ).toUpperCase();
+    if (BODYLESS_METHODS.has(method)) {
+      return fetchImpl(input, init);
+    }
+    const headers = new Headers(
+      init?.headers ?? (input instanceof Request ? input.headers : undefined),
+    );
+    if (!headers.has("Content-Type")) {
+      headers.set("Content-Type", "application/json");
+    }
+    return fetchImpl(input, { ...init, headers });
+  };
+}
+
 export const api = hc<AppType>("/", {
-  fetch: withSignInRedirect((input, init) => fetch(input, init)),
+  fetch: withSignInRedirect(
+    withJsonContentType((input, init) => fetch(input, init)),
+  ),
 });

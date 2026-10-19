@@ -7,6 +7,7 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
+import { parseIndexSearch } from "@/lib/issues";
 import { IndexRoute } from "@/routes/index";
 import { NotAllowedRoute } from "@/routes/not-allowed";
 import { SettingsRoute } from "@/routes/settings";
@@ -40,6 +41,7 @@ const shellRoute = createRoute({
 const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
+  validateSearch: parseIndexSearch,
   component: IndexRoute,
 });
 

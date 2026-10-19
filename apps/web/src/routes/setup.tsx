@@ -19,7 +19,8 @@ import { Form } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 
-const TOKEN_REJECTED = "That setup token is not valid. Check the server log.";
+const TOKEN_REJECTED =
+  "That setup token is not valid. Check the setup-token file in the data directory.";
 const SESSION_EXPIRED =
   "The setup session has expired. Enter the setup token again.";
 const UNREACHABLE = "The server could not be reached. Try again.";
@@ -88,8 +89,9 @@ function TokenStep({
         <CardHeader>
           <CardTitle>Set up Crossboard</CardTitle>
           <CardDescription>
-            This instance has no GitHub App yet. Enter the setup token the
-            server logged when it started.
+            This instance has no GitHub App yet. Enter the setup token from the
+            setup-token file in the data directory (
+            {"docker exec <container> cat /data/setup-token"}).
           </CardDescription>
         </CardHeader>
         <CardPanel>
