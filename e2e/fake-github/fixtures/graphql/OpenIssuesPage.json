@@ -1,0 +1,395 @@
+{
+  "answerBy": ["owner", "name"],
+  "answers": {
+    "octocat/hello-world": {
+      "data": {
+        "rateLimit": {
+          "cost": 1,
+          "remaining": 4999,
+          "resetAt": "2030-01-01T00:00:00Z"
+        },
+        "repository": {
+          "issues": {
+            "totalCount": 3,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            },
+            "nodes": [
+              {
+                "id": "I_e2e_hw_1",
+                "databaseId": 9001,
+                "number": 1,
+                "title": "Greeting banner is cut off on small screens",
+                "url": "https://github.com/octocat/hello-world/issues/1",
+                "createdAt": "2026-10-01T09:00:00Z",
+                "updatedAt": "2026-10-12T10:00:00Z",
+                "author": {
+                  "login": "octocat"
+                },
+                "issueType": null,
+                "milestone": null,
+                "labels": {
+                  "totalCount": 2,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "id": "LA_e2e_1",
+                      "name": "bug",
+                      "color": "d73a4a",
+                      "description": "Something isn't working"
+                    },
+                    {
+                      "id": "LA_e2e_2",
+                      "name": "good first issue",
+                      "color": "7057ff",
+                      "description": null
+                    }
+                  ]
+                },
+                "assignees": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "login": "octocat",
+                      "avatarUrl": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23888'/%3E%3C/svg%3E"
+                    }
+                  ]
+                },
+                "parent": null,
+                "subIssuesSummary": {
+                  "total": 0,
+                  "completed": 0
+                },
+                "issueDependenciesSummary": {
+                  "totalBlockedBy": 0,
+                  "totalBlocking": 0
+                },
+                "blockedBy": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "blocking": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                }
+              },
+              {
+                "id": "I_e2e_hw_2",
+                "databaseId": 9002,
+                "number": 2,
+                "title": "Translate the README to German",
+                "url": "https://github.com/octocat/hello-world/issues/2",
+                "createdAt": "2026-10-02T09:00:00Z",
+                "updatedAt": "2026-10-11T10:00:00Z",
+                "author": {
+                  "login": "octocat"
+                },
+                "issueType": null,
+                "milestone": {
+                  "title": "v1.0",
+                  "url": "https://github.com/octocat/hello-world/milestone/1"
+                },
+                "labels": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "id": "LA_e2e_3",
+                      "name": "documentation",
+                      "color": "0075ca",
+                      "description": null
+                    }
+                  ]
+                },
+                "assignees": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "parent": null,
+                "subIssuesSummary": {
+                  "total": 0,
+                  "completed": 0
+                },
+                "issueDependenciesSummary": {
+                  "totalBlockedBy": 0,
+                  "totalBlocking": 0
+                },
+                "blockedBy": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "blocking": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                }
+              },
+              {
+                "id": "I_e2e_hw_3",
+                "databaseId": 9003,
+                "number": 3,
+                "title": "Add a changelog",
+                "url": "https://github.com/octocat/hello-world/issues/3",
+                "createdAt": "2026-10-03T09:00:00Z",
+                "updatedAt": "2026-10-10T10:00:00Z",
+                "author": {
+                  "login": "octocat"
+                },
+                "issueType": null,
+                "milestone": null,
+                "labels": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "assignees": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "parent": null,
+                "subIssuesSummary": {
+                  "total": 0,
+                  "completed": 0
+                },
+                "issueDependenciesSummary": {
+                  "totalBlockedBy": 0,
+                  "totalBlocking": 0
+                },
+                "blockedBy": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "blocking": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "acme/rocket": {
+      "data": {
+        "rateLimit": {
+          "cost": 1,
+          "remaining": 4999,
+          "resetAt": "2030-01-01T00:00:00Z"
+        },
+        "repository": {
+          "issues": {
+            "totalCount": 2,
+            "pageInfo": {
+              "hasNextPage": false,
+              "endCursor": null
+            },
+            "nodes": [
+              {
+                "id": "I_e2e_rk_1",
+                "databaseId": 9101,
+                "number": 1,
+                "title": "Fuel gauge reads empty after launch",
+                "url": "https://github.com/acme/rocket/issues/1",
+                "createdAt": "2026-10-04T09:00:00Z",
+                "updatedAt": "2026-10-13T10:00:00Z",
+                "author": {
+                  "login": "octocat"
+                },
+                "issueType": {
+                  "name": "Bug",
+                  "color": "RED"
+                },
+                "milestone": null,
+                "labels": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "id": "LA_e2e_4",
+                      "name": "bug",
+                      "color": "d73a4a",
+                      "description": null
+                    }
+                  ]
+                },
+                "assignees": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "login": "octocat",
+                      "avatarUrl": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23888'/%3E%3C/svg%3E"
+                    }
+                  ]
+                },
+                "parent": null,
+                "subIssuesSummary": {
+                  "total": 0,
+                  "completed": 0
+                },
+                "issueDependenciesSummary": {
+                  "totalBlockedBy": 1,
+                  "totalBlocking": 0
+                },
+                "blockedBy": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "id": "I_e2e_rk_2",
+                      "number": 2,
+                      "title": "Replace the fuel line",
+                      "state": "OPEN",
+                      "url": "https://github.com/acme/rocket/issues/2",
+                      "repository": {
+                        "nameWithOwner": "acme/rocket"
+                      }
+                    }
+                  ]
+                },
+                "blocking": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                }
+              },
+              {
+                "id": "I_e2e_rk_2",
+                "databaseId": 9102,
+                "number": 2,
+                "title": "Replace the fuel line",
+                "url": "https://github.com/acme/rocket/issues/2",
+                "createdAt": "2026-10-05T09:00:00Z",
+                "updatedAt": "2026-10-14T10:00:00Z",
+                "author": {
+                  "login": "octocat"
+                },
+                "issueType": {
+                  "name": "Task",
+                  "color": "BLUE"
+                },
+                "milestone": null,
+                "labels": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "id": "LA_e2e_5",
+                      "name": "enhancement",
+                      "color": "a2eeef",
+                      "description": null
+                    }
+                  ]
+                },
+                "assignees": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "parent": null,
+                "subIssuesSummary": {
+                  "total": 2,
+                  "completed": 1
+                },
+                "issueDependenciesSummary": {
+                  "totalBlockedBy": 0,
+                  "totalBlocking": 1
+                },
+                "blockedBy": {
+                  "totalCount": 0,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": []
+                },
+                "blocking": {
+                  "totalCount": 1,
+                  "pageInfo": {
+                    "hasNextPage": false,
+                    "endCursor": null
+                  },
+                  "nodes": [
+                    {
+                      "id": "I_e2e_rk_1",
+                      "number": 1,
+                      "title": "Fuel gauge reads empty after launch",
+                      "state": "OPEN",
+                      "url": "https://github.com/acme/rocket/issues/1",
+                      "repository": {
+                        "nameWithOwner": "acme/rocket"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

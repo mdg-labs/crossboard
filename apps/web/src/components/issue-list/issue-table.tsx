@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { isShortcut } from "@/components/filter-bar/keyboard";
 import { IssueRow, ROW_HEIGHT } from "@/components/issue-list/issue-row";
 import {
   Table,
@@ -38,12 +39,15 @@ export function IssueTable({
   hasMore,
   loadingMore,
   onLoadMore,
+  onFilter,
 }: {
   items: IssueItem[];
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
+  onFilter: (qualifier: string) => void;
 }): React.ReactElement {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -68,6 +72,29 @@ export function IssueTable({
     }
   }, [hasMore, loadingMore, lastIndex, items.length, onLoadMore]);
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!isShortcut(event)) {
+        return;
+      }
+      const current = items.findIndex((issue) => issue.id === selectedId);
+      if (event.key === "j" || event.key === "k") {
+        event.preventDefault();
+        const next = Math.min(
+          Math.max(current + (event.key === "j" ? 1 : -1), 0),
+          items.length - 1,
+        );
+        setSelectedId(items[next]?.id ?? null);
+        virtualizer.scrollToIndex(next);
+      } else if (event.key === "o" && current >= 0) {
+        event.preventDefault();
+        window.open(items[current]?.url, "_blank", "noopener,noreferrer");
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [items, selectedId, virtualizer]);
+
   return (
     <Table
       className="min-w-[1500px] table-fixed border-separate border-spacing-0"
@@ -89,7 +116,12 @@ export function IssueTable({
         {rows.map((row) => {
           const issue = items[row.index];
           return issue === undefined ? null : (
-            <IssueRow issue={issue} key={issue.id} />
+            <IssueRow
+              issue={issue}
+              key={issue.id}
+              onFilter={onFilter}
+              selected={issue.id === selectedId}
+            />
           );
         })}
         {paddingBottom > 0 ? (

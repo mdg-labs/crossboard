@@ -1,0 +1,26 @@
+{
+  "nodesBy": "ids",
+  "rateLimit": {
+    "cost": 1,
+    "remaining": 4999,
+    "resetAt": "2030-01-01T00:00:00Z"
+  },
+  "nodes": {
+    "R_kgDOE2E001": {
+      "id": "R_kgDOE2E001",
+      "isArchived": false,
+      "hasIssuesEnabled": true,
+      "issues": {
+        "totalCount": 3
+      }
+    },
+    "R_kgDOE2E002": {
+      "id": "R_kgDOE2E002",
+      "isArchived": false,
+      "hasIssuesEnabled": true,
+      "issues": {
+        "totalCount": 2
+      }
+    }
+  }
+}

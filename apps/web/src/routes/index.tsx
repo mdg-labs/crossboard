@@ -1,5 +1,6 @@
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { IssueList } from "@/components/issue-list/issue-list";
+import { appendQualifier } from "@/components/filter-bar/qualifiers";
 import { DEFAULT_SORT, parseIndexSearch, type Sort } from "@/lib/issues";
 
 export function IndexRoute(): React.ReactElement {
@@ -8,6 +9,19 @@ export function IndexRoute(): React.ReactElement {
 
   return (
     <IssueList
+      onFilter={(qualifier) => {
+        const q = appendQualifier(search.q ?? "", qualifier);
+        if (q === null) {
+          return;
+        }
+        void navigate({
+          to: "/",
+          search: {
+            q,
+            ...(search.sort === undefined ? {} : { sort: search.sort }),
+          },
+        });
+      }}
       onSortChange={(sort: Sort) =>
         void navigate({
           to: "/",

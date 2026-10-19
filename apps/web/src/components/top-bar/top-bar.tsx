@@ -1,7 +1,6 @@
 import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Group } from "@/components/ui/group";
-import { Input } from "@/components/ui/input";
+import { FilterBar } from "@/components/filter-bar/filter-bar";
 import { Toolbar, ToolbarButton, ToolbarGroup } from "@/components/ui/toolbar";
 import { UserMenu } from "@/components/top-bar/user-menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
@@ -41,16 +40,7 @@ export function TopBar(): React.ReactElement {
           <UserMenu />
         </ToolbarGroup>
       </Toolbar>
-      <Group
-        aria-label="Filter"
-        className="col-start-2 row-start-1 w-full max-w-2xl justify-self-center"
-      >
-        <Input
-          aria-label="Filter issues"
-          placeholder="Filter issues"
-          type="text"
-        />
-      </Group>
+      <FilterBar />
     </header>
   );
 }

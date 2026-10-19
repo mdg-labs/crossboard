@@ -17,6 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { Skeleton } from "@/components/ui/skeleton";
 import { loadedIssues, issuesQuery, SORT_ITEMS, type Sort } from "@/lib/issues";
 import { meQuery } from "@/lib/me";
@@ -58,10 +59,12 @@ export function IssueList({
   q,
   sort,
   onSortChange,
+  onFilter,
 }: {
   q: string;
   sort: Sort;
   onSortChange: (sort: Sort) => void;
+  onFilter: (qualifier: string) => void;
 }): React.ReactElement {
   const issues = useInfiniteQuery(issuesQuery(q, sort));
   const items = loadedIssues(issues.data);
@@ -111,6 +114,7 @@ export function IssueList({
           hasMore={issues.hasNextPage && !issues.isFetchNextPageError}
           items={items}
           loadingMore={issues.isFetchingNextPage}
+          onFilter={onFilter}
           onLoadMore={() => void fetchNextPage()}
         />
         {issues.isFetchNextPageError ? (
@@ -143,26 +147,37 @@ export function IssueList({
             ? ""
             : `${total.toLocaleString("en-US")} ${total === 1 ? "issue" : "issues"}`}
         </p>
-        <Select
-          items={SORT_ITEMS}
-          onValueChange={(value) => {
-            if (value !== null) {
-              onSortChange(value);
-            }
-          }}
-          value={sort}
-        >
-          <SelectTrigger aria-label="Sort issues" className="w-56" size="sm">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup>
-            {SORT_ITEMS.map((item) => (
-              <SelectItem key={item.value} value={item.value}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
+        <div className="flex items-center gap-4">
+          <p className="flex items-center gap-1.5 text-muted-foreground text-xs">
+            <KbdGroup>
+              <Kbd>j</Kbd>
+              <Kbd>k</Kbd>
+            </KbdGroup>
+            move
+            <Kbd>o</Kbd>
+            open on GitHub
+          </p>
+          <Select
+            items={SORT_ITEMS}
+            onValueChange={(value) => {
+              if (value !== null) {
+                onSortChange(value);
+              }
+            }}
+            value={sort}
+          >
+            <SelectTrigger aria-label="Sort issues" className="w-56" size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup>
+              {SORT_ITEMS.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
       </div>
       {body}
     </section>

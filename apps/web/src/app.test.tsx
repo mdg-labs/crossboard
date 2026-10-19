@@ -51,7 +51,7 @@ describe("shell", () => {
     const toolbar = screen.getByRole("toolbar");
     const filter = screen.getByRole("textbox", { name: "Filter issues" });
     expect(toolbar.contains(filter)).toBe(false);
-    expect(filter.closest("[data-slot=group]")).toBeTruthy();
+    expect(filter.closest("[data-slot=input-group]")).toBeTruthy();
 
     filter.focus();
     for (const key of ["ArrowLeft", "ArrowRight", "Home", "End"]) {
