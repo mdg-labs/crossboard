@@ -1,0 +1,38 @@
+{
+  "1001": [
+    {
+      "id": 5001,
+      "node_id": "R_kgDOE2E001",
+      "name": "hello-world",
+      "full_name": "octocat/hello-world",
+      "owner": { "id": 583231, "login": "octocat" },
+      "private": false,
+      "archived": false,
+      "has_issues": true
+    }
+  ],
+  "1002": [
+    {
+      "id": 5002,
+      "node_id": "R_kgDOE2E002",
+      "name": "rocket",
+      "full_name": "acme/rocket",
+      "owner": { "id": 700001, "login": "acme" },
+      "private": true,
+      "archived": false,
+      "has_issues": true
+    }
+  ],
+  "2001": [
+    {
+      "id": 5003,
+      "node_id": "R_kgDOE2E003",
+      "name": "secrets",
+      "full_name": "mallory-labs/secrets",
+      "owner": { "id": 700002, "login": "mallory-labs" },
+      "private": true,
+      "archived": false,
+      "has_issues": true
+    }
+  ]
+}

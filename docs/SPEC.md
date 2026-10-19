@@ -312,7 +312,7 @@ packages/query/         @crossboard/query (no runtime dependencies)
 e2e/                    @crossboard/e2e: Playwright tests and the fake GitHub server
 ```
 
-`pnpm-workspace.yaml` lists `apps/*`, `packages/*` and `e2e`. Every package has the scripts `lint`, `typecheck`, `test` (and `build` where it builds). The root has `lint`, `typecheck`, `test`, `build`, `format:check` and `gate` (all of them in sequence); CI runs `pnpm gate` and the Docker build.
+`pnpm-workspace.yaml` lists `apps/*`, `packages/*` and `e2e`. Every package has the scripts `lint`, `typecheck`, `test` (and `build` where it builds), except `e2e`, which has `test:e2e` instead of `test`: CI runs it against the built image (§7.6), and the root `test` does not. The root has `lint`, `typecheck`, `test`, `build`, `format:check` and `gate` (all of them in sequence); CI runs `pnpm gate` and the Docker build.
 
 ### 7.3 Jobs
 The `jobs` interface has `enqueue(name, payload, { key?, delayMs? })` and `schedule(name, intervalMs)`. The v1 implementation is in-process: an async queue with per-installation concurrency (§6.1); a `key` deduplicates pending jobs (used for the 5 s refetch debounce). Jobs are not persisted. At startup the scheduler derives the work from DB state: repos `pending` or `syncing` are (re)synced; reconciliation and daily resync timers start.
@@ -363,7 +363,7 @@ Configuration comes only from environment variables, validated at startup; an in
 - `apps/server`: unit tests for placement and nesting, sanitizer, encryption and config; integration tests against a temporary SQLite file with `msw` faking GitHub for sync, webhooks (signed fixtures), reconciliation, access computation and every API route, including the cross-user isolation tests of §9.1.
 - `apps/web`: component tests (Vitest + Testing Library) for the list's keyboard navigation, the loading/empty/error states of each view, "Show N more" on board columns, filter error underlining and the dependency graph's layout limits.
 - `e2e/`: a small fake GitHub server (OAuth, REST, GraphQL from fixtures) and Playwright smoke tests: sign in, list and filter, open detail, create a board, see placement.
-- CI (`.github/workflows/ci.yml`, self-hosted `runners01`): on pushes to `dev` and `main` and on pull requests: install, `pnpm gate`, Docker build, Playwright against the built image.
+- CI (`.github/workflows/ci.yml`, self-hosted `runners01`): on pushes to `dev` and `main` and on pull requests: install, `pnpm gate`, Docker build, Playwright against the built image. The nightly workflow (`.github/workflows/nightly.yml`, D-23) runs on pushes to `main`: `pnpm gate`, then it builds and pushes the nightly image.
 
 ## 8. Data model
 
@@ -534,6 +534,7 @@ M4 depends only on M1 and can run in parallel with M2 and M3.
 - **D-20 UI components:** the web app is composed from coss ui (Base UI and Tailwind CSS 4), added with the shadcn CLI into `apps/web/src/components/ui/` and treated as vendored code; it replaces the Radix UI primitives. Each UI element uses the component the §10.1 map names; the frontend is not designed by hand. Inter and Geist Mono are bundled from npm font packages, never loaded from a CDN; Base UI's inline style elements are disabled so the CSP of §9.3 stays unchanged. Agents use the `coss` skill (`.agents/skills/coss`). (2026-10-18)
 - **D-21 Board repo picker:** boards get a repo picker that edits the ad-hoc filter's `repo:` term, defaulting to all repos (FR-34); it is not saved with the board, since a board's base filter can already hold `repo:` terms. (2026-10-18)
 - **D-22 Detail panel and filter error:** the detail Drawer is non-modal, so `j`/`k`, `/` and clicks keep working on the list or board behind it; if coss's Drawer cannot be non-modal, that is a §14 question, not a hand-built panel. The filter's error range (FR-18) is underlined by a text layer mirrored behind the Input Group, the third hand-built UI element. (2026-10-18)
+- **D-23 Nightly image:** every push to `main` runs `.github/workflows/nightly.yml`, which runs `pnpm gate` and then builds the image for `linux/amd64` only and pushes `ghcr.io/mdg-labs/crossboard:<short sha>` (the first 7 characters of the commit SHA) and the moving `:nightly`. D-16 stays the only source of `:<version>` and `:latest`. (2026-10-19)
 
 ## 14. Open questions
 None. New questions are added here with a recommended default and resolved into §13.

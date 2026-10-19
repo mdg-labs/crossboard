@@ -2,14 +2,30 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
+import { connect } from "node:net";
+import { setTimeout as realSleep } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
+import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
+import { openAndMigrate, schema } from "../src/db/index.js";
+import { addUser, signIn } from "./sign-in.js";
+import { accessHandlers, storeTokens } from "./access.js";
+import {
+  createFakeGithub,
+  FAKE_API_URL,
+  FAKE_WEB_URL,
+  USER_TOKEN,
+} from "./github-fake.js";
 
 let output: string[];
 let exit: ReturnType<typeof vi.spyOn>;
 let dataDir: string;
-let opened: { sqlite: Database.Database; server: Server }[];
+let opened: {
+  sqlite: Database.Database;
+  server: Server;
+  jobs: { stop(): Promise<void> };
+}[];
 let port: number;
 let signalListeners: Map<NodeJS.Signals, NodeJS.SignalsListener[]>;
 
@@ -33,8 +49,9 @@ beforeEach(async () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const handle of opened) {
+    await handle.jobs.stop();
     handle.server.close();
     handle.server.closeAllConnections();
     handle.sqlite.close();
@@ -71,7 +88,11 @@ function stubEnv(env: Record<string, string>) {
 
 async function start() {
   const entry = await import("../src/index.js");
-  opened.push({ sqlite: entry.database.sqlite, server: entry.server });
+  opened.push({
+    sqlite: entry.database.sqlite,
+    server: entry.server,
+    jobs: entry.jobs,
+  });
   return entry;
 }
 
@@ -185,13 +206,228 @@ describe("process entry", () => {
   });
 
   it("answers unknown /api routes in the error shape through the listener", async () => {
-    stubEnv(validEnv);
-    await start();
-    const response = await fetch(`http://127.0.0.1:${port}/api/nope`);
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const response = await fetch(`http://127.0.0.1:${port}/api/nope`, {
+      headers: { Cookie: signIn(entry.database.db).cookie },
+    });
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },
     });
+  });
+
+  it("schedules the daily session cleanup", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const user = signIn(entry.database.db);
+    entry.database.sqlite
+      .prepare("UPDATE sessions SET expires_at = 1 WHERE user_id = ?")
+      .run(user.userId);
+    expect(entry.jobs.enqueue("sessions.cleanup", undefined)).toBe(true);
+    const deadline = Date.now() + 5000;
+    const count = () =>
+      entry.database.sqlite.prepare("SELECT count(*) FROM sessions").pluck();
+    while (count().get() !== 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(count().get()).toBe(0);
+  });
+
+  it("cleans up expired sessions and orphaned tokens shortly after start", async () => {
+    const seed = openAndMigrate(dataDir);
+    const lapsed = addUser(seed.db);
+    createSession(seed.db, lapsed.id, Date.now() - SESSION_TTL_MS - 1);
+    const active = signIn(seed.db);
+    for (const userId of [lapsed.id, active.userId]) {
+      seed.db
+        .insert(schema.userTokens)
+        .values({
+          userId,
+          accessTokenEnc: "v1:a:b:c",
+          accessExpiresAt: 1,
+          refreshTokenEnc: "v1:a:b:c",
+          refreshExpiresAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+    }
+    seed.sqlite.close();
+
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const count = (table: string) =>
+      entry.database.sqlite.prepare(`SELECT count(*) FROM ${table}`).pluck();
+    const deadline = Date.now() + 3000;
+    while (
+      (count("sessions").get() !== 1 || count("user_tokens").get() !== 1) &&
+      Date.now() < deadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(count("sessions").get()).toBe(1);
+    expect(
+      entry.database.sqlite
+        .prepare("SELECT user_id FROM user_tokens")
+        .pluck()
+        .all(),
+    ).toEqual([active.userId]);
+  });
+
+  it("schedules the hourly access computation for users with a live session", async () => {
+    const seed = openAndMigrate(dataDir);
+    const live = signIn(seed.db, addUser(seed.db, "alice").id);
+    const lapsed = addUser(seed.db, "bob");
+    createSession(seed.db, lapsed.id, Date.now() - SESSION_TTL_MS - 1);
+    storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, live.userId, {
+      access: "ghu_alice",
+    });
+    storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, lapsed.id, {
+      access: "ghu_bob",
+    });
+    seed.sqlite.close();
+
+    stubEnv({
+      ...validEnv,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const fake = createFakeGithub();
+    fake.listen();
+    fake.server.use(
+      ...accessHandlers({
+        ghu_alice: {
+          installations: [{ id: 1, login: "alice" }],
+          repos: {
+            1: [{ id: 10, nodeId: "R_10", owner: "alice", name: "notes" }],
+          },
+        },
+        ghu_bob: {
+          installations: [{ id: 2, login: "bob" }],
+          repos: {
+            2: [{ id: 20, nodeId: "R_20", owner: "bob", name: "secret" }],
+          },
+        },
+      }),
+    );
+    try {
+      const entry = await start();
+      expect(() => entry.jobs.schedule("access.compute", 1000)).toThrow(
+        /already scheduled/,
+      );
+      expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+      const access = () =>
+        entry.database.sqlite
+          .prepare(
+            "SELECT user_id, repo_id FROM user_repo_access ORDER BY user_id",
+          )
+          .all();
+      const deadline = Date.now() + 5000;
+      while (access().length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(access()).toEqual([{ user_id: live.userId, repo_id: "R_10" }]);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("gates a fresh instance behind the setup token it logs at start", async () => {
+    stubEnv(validEnv);
+    await start();
+
+    const logged = output
+      .join("")
+      .trim()
+      .split("\n")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            level: number;
+            msg: string;
+            setupToken?: string;
+          },
+      )
+      .find((record) => record.setupToken !== undefined);
+    expect(logged?.level).toBe(40);
+    const token = logged?.setupToken ?? "";
+    expect(token).not.toBe("");
+
+    const base = `http://127.0.0.1:${port}`;
+    const redirect = await fetch(`${base}/api/issues`, { redirect: "manual" });
+    expect(redirect.status).toBe(302);
+    expect(redirect.headers.get("location")).toBe("/setup");
+    expect((await fetch(`${base}/api/health`)).status).toBe(200);
+
+    const headers = {
+      Origin: validEnv.CROSSBOARD_PUBLIC_URL,
+      "Content-Type": "application/json",
+    };
+    const wrong = await fetch(`${base}/api/setup/token`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ token: "wrong" }),
+    });
+    expect(wrong.status).toBe(401);
+    expect(wrong.headers.get("set-cookie")).toBeNull();
+
+    const right = await fetch(`${base}/api/setup/token`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ token }),
+    });
+    expect(right.status).toBe(204);
+    expect(right.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(rowsOf("app_config")).toBe(1);
+  });
+
+  it("serves normally and logs no setup token when the environment has the App credentials", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    await start();
+    const response = await fetch(`http://127.0.0.1:${port}/api/issues`, {
+      redirect: "manual",
+    });
+    expect(response.status).toBe(401);
+    expect(output.join("")).not.toContain("setupToken");
+    expect(rowsOf("app_config")).toBe(0);
+  });
+
+  it("creates the GitHub client from the configured base URLs", async () => {
+    stubEnv({
+      ...validEnv,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const fake = createFakeGithub();
+    fake.listen();
+    try {
+      const entry = await start();
+      expect(await entry.github.getUser(USER_TOKEN)).toMatchObject({
+        login: "octocat",
+      });
+      expect(fake.requests).toEqual([
+        { method: "GET", url: `${FAKE_API_URL}/user` },
+      ]);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("starts the job scheduler once the migrations are applied", async () => {
+    stubEnv(validEnv);
+    const entry = await start();
+    expect(entry.jobs.started).toBe(true);
+    const ticks: number[] = [];
+    entry.jobs.register(
+      "probe",
+      () => void ticks.push(rowsOf("users") as number),
+    );
+    entry.jobs.schedule("probe", 10);
+    const deadline = Date.now() + 2_000;
+    while (ticks.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(ticks).toEqual([0]);
   });
 
   it.each(SIGNALS)(
@@ -213,6 +449,7 @@ describe("process entry", () => {
       expect(await exited).toBe(0);
       expect(entry.server.listening).toBe(false);
       expect(entry.database.sqlite.open).toBe(false);
+      expect(entry.jobs.started).toBe(false);
       expect(output.join("")).toContain('"msg":"shutting down"');
       expect(process.listenerCount(signal)).toBe(
         signalListeners.get(signal)?.length,
@@ -245,5 +482,95 @@ describe("process entry", () => {
     } finally {
       holder.close();
     }
+  });
+});
+
+describe("process entry shutdown", () => {
+  it("waits for a running job before it closes the database", async () => {
+    stubEnv(validEnv);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const exited = new Promise<unknown>((resolve) => {
+      exit.mockImplementation((code?: string | number | null) => {
+        resolve(code);
+        return undefined as never;
+      });
+    });
+    const entry = await start();
+    if (!entry.server.listening) {
+      await new Promise((resolve) => entry.server.once("listening", resolve));
+    }
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    entry.jobs.register("slow", async () => {
+      started();
+      await held;
+    });
+    entry.jobs.enqueue("slow", null);
+    await running;
+
+    process.emit("SIGTERM", "SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(entry.database.sqlite.open).toBe(true);
+    release();
+    expect(await exited).toBe(0);
+    expect(entry.database.sqlite.open).toBe(false);
+    opened.pop();
+  });
+
+  it("closes the database within one grace period of the signal when a connection and a job both hang", async () => {
+    stubEnv(validEnv);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let exitCode: unknown = "pending";
+    exit.mockImplementation((code?: string | number | null) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const entry = await start();
+    if (!entry.server.listening) {
+      await new Promise((resolve) => entry.server.once("listening", resolve));
+    }
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    entry.jobs.register("slow", async () => {
+      started();
+      await held;
+    });
+    entry.jobs.enqueue("slow", null);
+    await running;
+    // An incomplete request keeps the connection open, so server.close() only
+    // finishes once the entry force-closes it.
+    const client = connect(port, "127.0.0.1");
+    client.on("error", () => undefined);
+    await new Promise((resolve) => client.once("connect", resolve));
+    client.write("GET /api/health HTTP/1.1\r\nHost: localhost\r\n");
+    await realSleep(50);
+
+    // Only setTimeout is faked, so sockets and promises keep running for real.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      process.emit("SIGTERM", "SIGTERM");
+      // A single grace period after the signal, not one per phase.
+      await vi.advanceTimersByTimeAsync(5_000);
+      for (let i = 0; i < 40 && exitCode === "pending"; i += 1) {
+        await realSleep(25);
+      }
+      expect(exitCode).toBe(0);
+      expect(entry.database.sqlite.open).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      client.destroy();
+      release();
+    }
+    opened.pop();
   });
 });

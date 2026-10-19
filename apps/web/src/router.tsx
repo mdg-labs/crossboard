@@ -8,6 +8,9 @@ import {
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
 import { IndexRoute } from "@/routes/index";
+import { NotAllowedRoute } from "@/routes/not-allowed";
+import { SettingsRoute } from "@/routes/settings";
+import { SetupRoute } from "@/routes/setup";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -25,16 +28,44 @@ function Shell(): React.ReactElement {
 }
 
 const rootRoute = createRootRouteWithContext<RouterContext>()({
+  component: Outlet,
+});
+
+const shellRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: "shell",
   component: Shell,
 });
 
 const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => shellRoute,
   path: "/",
   component: IndexRoute,
 });
 
-const routeTree = rootRoute.addChildren([indexRoute]);
+const settingsRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/settings",
+  component: SettingsRoute,
+});
+
+const setupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/setup",
+  component: SetupRoute,
+});
+
+const notAllowedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/auth/not-allowed",
+  component: NotAllowedRoute,
+});
+
+const routeTree = rootRoute.addChildren([
+  shellRoute.addChildren([indexRoute, settingsRoute]),
+  setupRoute,
+  notAllowedRoute,
+]);
 
 export function createAppRouter(options: {
   queryClient: QueryClient;

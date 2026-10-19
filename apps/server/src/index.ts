@@ -3,9 +3,18 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
+import { createAccess, registerAccessJob } from "./access/index.js";
 import { createApp } from "./app.js";
+import {
+  enqueueSessionCleanupAtStart,
+  registerSessionCleanup,
+} from "./auth/sessions/index.js";
+import { createSetup } from "./auth/setup/index.js";
+import { createUserTokens } from "./auth/tokens.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
+import { createGithubClient } from "./github/index.js";
+import { createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
 import { readServerVersion } from "./version.js";
 import type { Logger } from "pino";
@@ -49,6 +58,12 @@ logger.info(
   "crossboard configured",
 );
 
+// Started once the migrations are applied, so handlers can rely on the schema.
+export const jobs = createJobs({ logger });
+registerSessionCleanup(jobs, database.db, logger);
+jobs.start();
+enqueueSessionCleanupAtStart(jobs);
+
 const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
 if (!existsSync(join(webRoot, "index.html"))) {
   logger.warn(
@@ -57,7 +72,40 @@ if (!existsSync(join(webRoot, "index.html"))) {
   );
 }
 
-const app = createApp({ logger, version: readServerVersion(), webRoot });
+export const github = createGithubClient({
+  apiUrl: config.githubApiUrl,
+  webUrl: config.githubWebUrl,
+  logger,
+});
+
+export const setup = createSetup({ db: database.db, config, logger });
+setup.start();
+
+export const access = createAccess({
+  db: database.db,
+  github,
+  allowlist: setup.allowlist,
+  logger,
+  tokens: createUserTokens({
+    db: database.db,
+    github,
+    credentials: () => setup.credentials(),
+    appSecret: config.appSecret,
+    logger,
+  }),
+});
+registerAccessJob(jobs, access, database.db, logger);
+
+const app = createApp({
+  logger,
+  db: database.db,
+  github,
+  version: readServerVersion(),
+  webRoot,
+  setup,
+  appSecret: config.appSecret,
+  publicUrl: config.publicUrl,
+});
 
 // Without the http2 option, serve() returns a plain http.Server.
 export const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
@@ -71,15 +119,25 @@ server.on("error", (error) => {
 
 // The container runs this process as PID 1, where an unhandled SIGTERM is
 // ignored and `docker stop` ends in a SIGKILL. Stop accepting connections, let
-// in-flight requests finish (cut off after a grace period shorter than
-// Docker's 10 s), then close the database so the WAL is checkpointed.
+// in-flight requests and running jobs finish (cut off after a grace period
+// shorter than Docker's 10 s), then close the database so the WAL is
+// checkpointed.
 const SHUTDOWN_GRACE_MS = 5_000;
 
 function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, "shutting down");
+  const jobsStopped = jobs.stop();
+  // One deadline from the start of the shutdown bounds both the connection
+  // drain and the job wait; it is not unref'd, so it keeps the process alive
+  // until the database is closed.
+  const grace = new Promise<void>((resolve) => {
+    setTimeout(resolve, SHUTDOWN_GRACE_MS);
+  });
   server.close(() => {
-    database.sqlite.close();
-    process.exit(0);
+    void Promise.race([jobsStopped, grace]).then(() => {
+      database.sqlite.close();
+      process.exit(0);
+    });
   });
   server.closeIdleConnections();
   setTimeout(() => server.closeAllConnections(), SHUTDOWN_GRACE_MS).unref();

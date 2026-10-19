@@ -4,18 +4,91 @@ import { Hono } from "hono";
 import type { Logger } from "pino";
 import { createApi } from "./api/index.js";
 import { createErrorHandler, notFound } from "./api/errors.js";
+import {
+  createSetupCallback,
+  createSetupRoutes,
+  setupGate,
+  type Setup,
+} from "./auth/setup/index.js";
+import { createSignInRoutes } from "./auth/sign-in/index.js";
+import {
+  createAuthRoutes,
+  requireApiSession,
+  requirePageSession,
+} from "./auth/sessions/index.js";
+import type { Db } from "./db/index.js";
+import type { GithubClient } from "./github/index.js";
+import {
+  contentSecurityPolicy,
+  protectStateChanges,
+} from "./security/index.js";
 
 export interface AppOptions {
   logger: Logger;
+  db: Db;
+  github: GithubClient;
   version: string;
   webRoot: string;
+  setup: Setup;
+  appSecret: string;
+  publicUrl: string;
 }
 
 export function createApp(options: AppOptions) {
-  const app = new Hono().route("/api", createApi({ version: options.version }));
+  const sessionOptions = { db: options.db, publicUrl: options.publicUrl };
+  const app = new Hono()
+    .use(contentSecurityPolicy())
+    .use(setupGate(options.setup, options.webRoot))
+    .use(protectStateChanges(options.publicUrl))
+    .use("/api/*", requireApiSession(sessionOptions))
+    .route(
+      "/api/setup",
+      createSetupRoutes({
+        setup: options.setup,
+        appSecret: options.appSecret,
+        publicUrl: options.publicUrl,
+      }),
+    )
+    .route(
+      "/setup/callback",
+      createSetupCallback({
+        setup: options.setup,
+        github: options.github,
+        logger: options.logger,
+        appSecret: options.appSecret,
+      }),
+    )
+    .route("/auth", createAuthRoutes(sessionOptions))
+    .route(
+      "/auth",
+      createSignInRoutes({
+        ...sessionOptions,
+        github: options.github,
+        setup: options.setup,
+        logger: options.logger,
+        appSecret: options.appSecret,
+      }),
+    )
+    .route(
+      "/api",
+      createApi({
+        version: options.version,
+        github: options.github,
+        db: options.db,
+        setup: options.setup,
+      }),
+    );
 
   app.all("/api/*", notFound);
-  app.use(serveStatic({ root: options.webRoot }));
+  // Directory requests and /index.html would serve the shell without the
+  // session check below.
+  const staticFiles = serveStatic({ root: options.webRoot });
+  app.use((c, next) =>
+    c.req.path.endsWith("/") || c.req.path === "/index.html"
+      ? next()
+      : staticFiles(c, next),
+  );
+  app.use(requirePageSession(sessionOptions));
   const spaFallback = serveStatic({
     path: join(options.webRoot, "index.html"),
   });

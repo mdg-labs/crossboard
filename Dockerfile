@@ -20,6 +20,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/server/package.json apps/server/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/query/package.json packages/query/package.json
+COPY e2e/package.json e2e/package.json
 
 # Runtime dependencies of the server only, with better-sqlite3 compiled for this platform.
 FROM manifests AS prod-deps

@@ -9,13 +9,21 @@ import { z } from "zod";
 import { createErrorHandler, notFound } from "../src/api/errors.js";
 import { validate } from "../src/api/validator.js";
 import { createApp, type AppType } from "../src/app.js";
+import { createSetup } from "../src/auth/setup/index.js";
+import { loadConfig } from "../src/config/index.js";
+import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
+import { createTestDatabase, type TestDatabase } from "./database.js";
+import { githubEnv, validEnv } from "./helpers.js";
+import { signIn } from "./sign-in.js";
 
 let dir: string;
 let webRoot: string;
 let logs: string[];
+let database: TestDatabase;
 
 beforeEach(() => {
+  database = createTestDatabase();
   dir = mkdtempSync(join(tmpdir(), "crossboard-app-"));
   webRoot = join(dir, "dist");
   mkdirSync(join(webRoot, "assets"), { recursive: true });
@@ -26,12 +34,31 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  database.cleanup();
   rmSync(dir, { recursive: true, force: true });
 });
 
+const jsonRequest = {
+  Origin: validEnv.CROSSBOARD_PUBLIC_URL,
+  "Content-Type": "application/json",
+};
+
+const member = () => ({ Cookie: signIn(database.db).cookie });
+
 function build(root = webRoot) {
+  const logger = createLogger("info", { write: (chunk) => logs.push(chunk) });
+  const config = loadConfig({ ...validEnv, ...githubEnv });
   return createApp({
-    logger: createLogger("info", { write: (chunk) => logs.push(chunk) }),
+    setup: createSetup({ db: database.db, config, logger }),
+    db: database.db,
+    appSecret: config.appSecret,
+    publicUrl: config.publicUrl,
+    logger,
+    github: createGithubClient({
+      apiUrl: "https://api.github.test",
+      webUrl: "https://github.test",
+      logger,
+    }),
     version: "9.8.7",
     webRoot: root,
   });
@@ -61,7 +88,10 @@ describe("error format", () => {
       ["GET", "/api"],
       ["POST", "/api/health"],
     ] as const) {
-      const response = await app.request(path, { method });
+      const response = await app.request(path, {
+        method,
+        headers: { ...member(), ...jsonRequest },
+      });
       expect(response.status, `${method} ${path}`).toBe(404);
       expect(await response.json()).toEqual({
         error: { code: "not_found", message: "Not found" },
@@ -70,7 +100,10 @@ describe("error format", () => {
   });
 
   it("answers a non-GET to an unknown non-API path with the error shape", async () => {
-    const response = await build().request("/somewhere", { method: "POST" });
+    const response = await build().request("/somewhere", {
+      method: "POST",
+      headers: { ...member(), ...jsonRequest },
+    });
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },
@@ -169,7 +202,7 @@ describe("static SPA serving", () => {
   });
 
   it("serves index.html at /", async () => {
-    const response = await build().request("/");
+    const response = await build().request("/", { headers: member() });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/html");
     expect(await response.text()).toContain("shell");
@@ -178,7 +211,7 @@ describe("static SPA serving", () => {
   it("answers client-side routes with index.html so a refresh loads them", async () => {
     const app = build();
     for (const path of ["/i/octocat/hello/42", "/boards/7", "/settings"]) {
-      const response = await app.request(path);
+      const response = await app.request(path, { headers: member() });
       expect(response.status, path).toBe(200);
       expect(await response.text(), path).toContain("shell");
     }
@@ -203,7 +236,9 @@ describe("static SPA serving", () => {
   });
 
   it("answers 404 in the error shape when the web app was not built", async () => {
-    const response = await build(join(dir, "missing")).request("/settings");
+    const response = await build(join(dir, "missing")).request("/settings", {
+      headers: member(),
+    });
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },

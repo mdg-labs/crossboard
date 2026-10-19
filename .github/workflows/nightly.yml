@@ -1,0 +1,117 @@
+name: Nightly image
+
+# Publishes the container image on every push to `main`, which moves only
+# through a merged promotion pull request. It tags the image with the commit's
+# short SHA and with the moving `nightly` tag; `:<version>` and `:latest`
+# belong to the tag-gated release workflow (SPEC D-16, D-23). It must never gain
+# a `pull_request`, `pull_request_target`, `workflow_run` or tag trigger: the
+# publish job holds `packages: write` (THREAT_MODEL T15, T16).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push to main cancels a still-running publish. A re-run of an older
+# run enters the group after the newer one has finished and keeps its old
+# GITHUB_SHA, so the push step also compares that SHA with the tip of `main`
+# and moves `nightly` only when they match: it never moves back to an older
+# commit.
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: [self-hosted, runners01]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      # pnpm falls back to a .pnpm-store inside the checkout when the default
+      # store is on another filesystem, and prettier then checks it.
+      - name: Install
+        env:
+          npm_config_store_dir: ${{ runner.temp }}/pnpm-store
+        run: pnpm install --frozen-lockfile
+
+      - name: Gate
+        run: pnpm gate
+
+  publish:
+    needs: gate
+    runs-on: [self-hosted, runners01]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/mdg-labs/crossboard
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          docker build \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.source=${SERVER_URL}/${REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${IMAGE}:${short_sha}" \
+            --tag "${IMAGE}:nightly" \
+            .
+
+      # The login lives in a Docker configuration of its own, so the registry
+      # credential never reaches the runner's shared one.
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          config="${RUNNER_TEMP}/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$config"
+          echo "DOCKER_CONFIG=${config}" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$config" docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+
+      # The read fails the step when the API call fails or returns nothing, so
+      # an unknown tip never counts as fresh.
+      - name: Push the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          docker push "${IMAGE}:${short_sha}"
+          main_tip="$(gh api "repos/${REPOSITORY}/branches/main" --jq .commit.sha)"
+          if [ -z "$main_tip" ]; then
+            echo "::error::Could not read the tip of main"
+            exit 1
+          fi
+          if [ "$main_tip" = "$GITHUB_SHA" ]; then
+            docker push "${IMAGE}:nightly"
+          else
+            echo "::notice::Skipping ${IMAGE}:nightly: ${GITHUB_SHA} is not the tip of main (${main_tip})"
+          fi
+
+      - name: Clean up
+        if: always()
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          rm -rf "${RUNNER_TEMP}/docker-config-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker image rm --force "${IMAGE}:${short_sha}" "${IMAGE}:nightly"

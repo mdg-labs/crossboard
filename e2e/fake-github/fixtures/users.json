@@ -1,0 +1,16 @@
+[
+  {
+    "id": 583231,
+    "login": "octocat",
+    "name": "The Octocat",
+    "avatar_url": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23888'/%3E%3C/svg%3E",
+    "installations": [1001, 1002]
+  },
+  {
+    "id": 900001,
+    "login": "mallory",
+    "name": "Mallory",
+    "avatar_url": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23888'/%3E%3C/svg%3E",
+    "installations": [2001]
+  }
+]
