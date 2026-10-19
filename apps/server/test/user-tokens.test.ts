@@ -50,7 +50,7 @@ afterEach(() => {
   database.cleanup();
 });
 
-function build(credentials = true) {
+function build(credentials = true, appSecret = APP_SECRET) {
   const logger = createLogger("trace", { write: (chunk) => logs.push(chunk) });
   return createUserTokens({
     db: database.db,
@@ -71,15 +71,18 @@ function build(credentials = true) {
             webhookSecret: "w",
           }
         : null,
-    appSecret: APP_SECRET,
+    appSecret,
     logger,
     now: () => NOW,
   });
 }
 
-function seed(tokens: Parameters<typeof storeTokens>[3]) {
+function seed(
+  tokens: Parameters<typeof storeTokens>[3],
+  appSecret = APP_SECRET,
+) {
   const user = addUser(database.db);
-  storeTokens(database.db, APP_SECRET, user.id, {
+  storeTokens(database.db, appSecret, user.id, {
     accessExpiresAt: NOW + 8 * 3_600_000,
     refreshExpiresAt: NOW + 86_400_000,
     ...tokens,
@@ -296,6 +299,90 @@ describe("a user's access token", () => {
       signIn(database.db, user.id, NOW);
       expect(build().rejected(user.id, "ghu_old")).toBe(false);
       expect(sessionsOf(user.id)).toHaveLength(1);
+    });
+  });
+
+  describe("when the stored tokens no longer decrypt under the current secret", () => {
+    const OLD_SECRET = "b".repeat(32);
+    const warnings = () =>
+      logs
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((entry) => entry.level === 40);
+
+    function expectSignedOut(userId: number, other: number) {
+      expect(stored(userId)).toBeUndefined();
+      expect(sessionsOf(userId)).toEqual([]);
+      expect(stored(other)).toBeDefined();
+      expect(sessionsOf(other)).toHaveLength(1);
+      expect(warnings()).toHaveLength(1);
+      expect(warnings()[0]).toMatchObject({ userId });
+      const output = logs.join("");
+      for (const value of ["ghu_old_key", "refresh_old_key"]) {
+        expect(output).not.toContain(value);
+      }
+      expect(output).not.toContain(stored(other)?.accessTokenEnc ?? "-");
+    }
+
+    it("deletes the user's tokens and sessions and returns null for a current access token, leaving other users alone", async () => {
+      const userId = seed(
+        { access: "ghu_old_key", refresh: "refresh_old_key" },
+        OLD_SECRET,
+      );
+      const other = seed({ access: "ghu_other" });
+
+      expect(await build().accessToken(userId)).toBeNull();
+
+      expectSignedOut(userId, other);
+      expect(await build().accessToken(other)).toBe("ghu_other");
+      expect(fake.requests).toEqual([]);
+    });
+
+    it("deletes the user's tokens and sessions and returns null when the access token is due for a refresh", async () => {
+      const userId = seed(
+        {
+          access: "ghu_old_key",
+          refresh: "refresh_old_key",
+          accessExpiresAt: NOW,
+        },
+        OLD_SECRET,
+      );
+      const other = seed({ access: "ghu_other" });
+
+      expect(await build().accessToken(userId)).toBeNull();
+
+      expectSignedOut(userId, other);
+      expect(fake.requests).toEqual([]);
+    });
+
+    it("deletes the user's tokens and sessions when only the refresh token cannot be decrypted", async () => {
+      const userId = seed({
+        access: "ghu_old_key",
+        refresh: "refresh_old_key",
+        accessExpiresAt: NOW,
+      });
+      database.db
+        .update(schema.userTokens)
+        .set({ refreshTokenEnc: "v1:not:valid:format" })
+        .where(eq(schema.userTokens.userId, userId))
+        .run();
+      const other = seed({ access: "ghu_other" });
+
+      expect(await build().accessToken(userId)).toBeNull();
+
+      expectSignedOut(userId, other);
+      expect(fake.requests).toEqual([]);
+    });
+
+    it("deletes the user's tokens and sessions when 401 is reported for it", () => {
+      const userId = seed(
+        { access: "ghu_old_key", refresh: "refresh_old_key" },
+        OLD_SECRET,
+      );
+      const other = seed({ access: "ghu_other" });
+
+      expect(build().rejected(userId, "ghu_old_key")).toBe(true);
+
+      expectSignedOut(userId, other);
     });
   });
 
