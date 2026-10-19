@@ -6,6 +6,7 @@ import { serve } from "@hono/node-server";
 import {
   activeInstallationIds,
   createAccess,
+  purgeInactiveInstallations,
   registerAccessJob,
 } from "./access/index.js";
 import { createApp } from "./app.js";
@@ -155,6 +156,11 @@ export const access = createAccess({
   },
 });
 registerAccessJob(jobs, access, database.db, logger);
+
+// An allowlist change since the last run can leave installations inactive that
+// no access computation saw go; their repos are purged before anything is
+// discovered or synced.
+purgeInactiveInstallations(database.db, setup.allowlist, logger);
 
 // Every active installation is discovered again at startup, then the repos a
 // restart left `pending` or `syncing` are synced.

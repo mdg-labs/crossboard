@@ -12,6 +12,7 @@ import { createFakeSyncGithub } from "./sync-fake.js";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
 import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
 import { openAndMigrate, schema } from "../src/db/index.js";
+import { accessibleRepos, hasRepoAccess } from "../src/access/index.js";
 import { addUser, signIn } from "./sign-in.js";
 import { accessHandlers, storeTokens } from "./access.js";
 import {
@@ -425,6 +426,175 @@ describe("process entry", () => {
           { id: "I_2" },
           { id: "I_3" },
         ]);
+      } finally {
+        fake.close();
+      }
+    });
+
+    it("purges the repositories of an installation an allowlist change deactivated before discovery runs", async () => {
+      const ORG_INSTALLATION_ID = 20;
+      const seed = openAndMigrate(dataDir);
+      const { db } = seed;
+      db.insert(schema.installations)
+        .values([
+          installationRow(INSTALLATION_ID, "octocat"),
+          {
+            ...installationRow(ORG_INSTALLATION_ID, "acme"),
+            accountType: "Organization",
+          },
+          installationRow(30, "stranger"),
+        ])
+        .run();
+      const carol = addUser(db, "carol");
+      const octocat = addUser(db, "octocat");
+      db.insert(schema.userInstallations)
+        .values([
+          {
+            userId: carol.id,
+            installationId: ORG_INSTALLATION_ID,
+            computedAt: 1,
+          },
+          {
+            userId: octocat.id,
+            installationId: INSTALLATION_ID,
+            computedAt: 1,
+          },
+        ])
+        .run();
+      const repoRow = (
+        id: string,
+        databaseId: number,
+        installationId: number,
+        owner: string,
+      ) => ({
+        id,
+        databaseId,
+        installationId,
+        owner,
+        name: "repo-1",
+        private: false,
+        syncState: id === "R_1" ? ("syncing" as const) : ("ready" as const),
+        openIssueCount: 3,
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      db.insert(schema.repos)
+        .values([
+          repoRow("R_1", 1, INSTALLATION_ID, "octocat"),
+          repoRow("R_org", 2, ORG_INSTALLATION_ID, "acme"),
+          repoRow("R_org_2", 3, ORG_INSTALLATION_ID, "acme-2"),
+          repoRow("R_stranger", 4, 30, "stranger"),
+        ])
+        .run();
+      const issueRow = (id: string, repoId: string, number: number) => ({
+        id,
+        databaseId: number + 100,
+        repoId,
+        number,
+        title: id,
+        url: "https://github.com/x/y/issues/1",
+        subTotal: 0,
+        subCompleted: 0,
+        blockedByTotal: 0,
+        blockingTotal: 0,
+        createdAt: 1,
+        updatedAt: 1,
+        syncedAt: 1,
+      });
+      db.insert(schema.issues)
+        .values([
+          issueRow("I_1", "R_1", 1),
+          issueRow("I_org", "R_org", 1),
+          issueRow("I_stranger", "R_stranger", 1),
+        ])
+        .run();
+      db.insert(schema.userRepoAccess)
+        .values([
+          { userId: carol.id, repoId: "R_org", computedAt: 1 },
+          { userId: carol.id, repoId: "R_org_2", computedAt: 1 },
+          { userId: octocat.id, repoId: "R_1", computedAt: 1 },
+        ])
+        .run();
+      const board = db
+        .insert(schema.boards)
+        .values({
+          userId: carol.id,
+          name: "b",
+          baseFilter: "repo:acme/repo",
+          sort: "updated",
+          subIssueMode: "flat",
+          showOther: false,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .returning()
+        .get();
+      db.insert(schema.boardColumns)
+        .values({
+          boardId: board.id,
+          position: 0,
+          name: "c",
+          filter: "is:open",
+        })
+        .run();
+      db.insert(schema.savedViews)
+        .values({
+          userId: carol.id,
+          name: "v",
+          filter: "repo:acme/repo",
+          sort: "updated",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv({
+        ...discoveryEnv(),
+        CROSSBOARD_ALLOWED_USERS: "octocat",
+        CROSSBOARD_ALLOWED_ORGS: "",
+      });
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(...repoWithIssues());
+      try {
+        const entry = await start();
+        await until(() => readyWithIssues(entry));
+        const ids = (table: string) =>
+          entry.database.sqlite
+            .prepare(`SELECT id FROM ${table} ORDER BY id`)
+            .pluck()
+            .all();
+        expect(ids("repos")).toEqual(["R_1"]);
+        expect(ids("issues")).toEqual(["I_1", "I_2", "I_3"]);
+        expect(accessibleRepos(entry.database.db, carol.id)).toEqual([]);
+        expect(hasRepoAccess(entry.database.db, carol.id, "R_org")).toBe(false);
+        expect(
+          accessibleRepos(entry.database.db, octocat.id).map(({ id }) => id),
+        ).toEqual(["R_1"]);
+        expect(ids("installations")).toEqual([
+          INSTALLATION_ID,
+          ORG_INSTALLATION_ID,
+          30,
+        ]);
+        expect(ids("boards")).toEqual([board.id]);
+        expect(ids("board_columns")).toHaveLength(1);
+        expect(ids("saved_views")).toHaveLength(1);
+        const purged = output
+          .join("")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .filter(
+            (record) =>
+              record.msg ===
+              "purged the repositories of inactive installations",
+          );
+        expect(purged).toHaveLength(1);
+        expect(purged[0]).toMatchObject({
+          level: 30,
+          installations: [ORG_INSTALLATION_ID, 30],
+          repos: 3,
+        });
       } finally {
         fake.close();
       }

@@ -13,6 +13,7 @@ import {
 } from "vitest";
 import { activeInstallationIds } from "../src/access/active.js";
 import { createAccess } from "../src/access/compute.js";
+import { purgeInactiveInstallations } from "../src/access/startup.js";
 import {
   ACCESS_INTERVAL_MS,
   ACCESS_JOB,
@@ -895,6 +896,162 @@ describe("an installation that becomes or stops being active", () => {
     expect(activated).toEqual([[5]]);
     await access.compute(alice.id);
     expect(activated).toEqual([[5]]);
+  });
+
+  describe("at startup", () => {
+    function seedInstallation(id: number, login: string, repoId: string) {
+      database.db
+        .insert(schema.installations)
+        .values({
+          id,
+          accountLogin: login,
+          accountId: id,
+          accountType: "Organization",
+          suspended: false,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      database.db
+        .insert(schema.repos)
+        .values({
+          id: repoId,
+          databaseId: id,
+          installationId: id,
+          owner: login,
+          name: "tracker",
+          private: true,
+          syncState: "ready",
+          openIssueCount: 2,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seedData(repoId);
+    }
+
+    const startupLogs = () =>
+      logs.filter(
+        (entry) =>
+          entry.msg === "purged the repositories of inactive installations",
+      );
+
+    function purge(startupAllowlist = allowlist) {
+      const logger = createLogger("trace", {
+        write: (chunk) => logs.push(JSON.parse(chunk)),
+      });
+      return purgeInactiveInstallations(database.db, startupAllowlist, logger);
+    }
+
+    it("purges an installation the allowlist no longer reaches and keeps the active one with its data", () => {
+      const alice = addUser(database.db, "alice");
+      seedInstallation(5, "org-5", "R_5");
+      seedInstallation(6, "org-6", "R_6");
+      database.db
+        .insert(schema.userInstallations)
+        .values({ userId: alice.id, installationId: 5, computedAt: 1 })
+        .run();
+      database.db
+        .insert(schema.userRepoAccess)
+        .values([
+          { userId: alice.id, repoId: "R_5", computedAt: 1 },
+          { userId: alice.id, repoId: "R_6", computedAt: 1 },
+        ])
+        .run();
+
+      expect(purge()).toEqual([6]);
+
+      expect(
+        database.db.select({ id: schema.repos.id }).from(schema.repos).all(),
+      ).toEqual([{ id: "R_5" }]);
+      expect(count(schema.issues)).toBe(2);
+      expect(count(schema.labels)).toBe(1);
+      expect(count(schema.issueLabels)).toBe(1);
+      expect(count(schema.issueAssignees)).toBe(1);
+      expect(accessOf(alice.id)).toEqual(["R_5"]);
+      expect(count(schema.installations)).toBe(2);
+      expect(startupLogs()).toHaveLength(1);
+      expect(startupLogs()[0]).toMatchObject({
+        level: 30,
+        installations: [6],
+        repos: 1,
+      });
+      expect(Object.keys(startupLogs()[0] ?? {}).sort()).toEqual([
+        "hostname",
+        "installations",
+        "level",
+        "msg",
+        "pid",
+        "repos",
+        "time",
+      ]);
+    });
+
+    it("purges what a narrowed allowlist no longer reaches and keeps what it still does", () => {
+      seedInstallation(5, "org-5", "R_5");
+      seedInstallation(6, "org-6", "R_6");
+      expect(purge({ users: [], orgs: ["org-5", "org-6"] })).toEqual([]);
+      expect(count(schema.repos)).toBe(2);
+      expect(purge({ users: [], orgs: ["org-5"] })).toEqual([6]);
+      expect(
+        database.db.select({ id: schema.repos.id }).from(schema.repos).all(),
+      ).toEqual([{ id: "R_5" }]);
+    });
+
+    it("leaves boards, columns and saved views and logs nothing when there is nothing to purge", () => {
+      const alice = addUser(database.db, "alice");
+      seedInstallation(6, "org-6", "R_6");
+      database.db
+        .insert(schema.installations)
+        .values({
+          id: 7,
+          accountLogin: "org-7",
+          accountId: 7,
+          accountType: "Organization",
+          suspended: false,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      const board = database.db
+        .insert(schema.boards)
+        .values({
+          userId: alice.id,
+          name: "b",
+          baseFilter: "repo:org-6/tracker",
+          sort: "updated",
+          subIssueMode: "flat",
+          showOther: false,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .returning()
+        .get();
+      database.db
+        .insert(schema.boardColumns)
+        .values({ boardId: board.id, position: 0, name: "c", filter: "x" })
+        .run();
+      database.db
+        .insert(schema.savedViews)
+        .values({
+          userId: alice.id,
+          name: "v",
+          filter: "repo:org-6/tracker",
+          sort: "updated",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+
+      expect(purge()).toEqual([6]);
+      expect(purge()).toEqual([]);
+
+      expect(count(schema.boards)).toBe(1);
+      expect(count(schema.boardColumns)).toBe(1);
+      expect(count(schema.savedViews)).toBe(1);
+      expect(count(schema.installations)).toBe(2);
+      expect(startupLogs()).toHaveLength(1);
+    });
   });
 });
 
