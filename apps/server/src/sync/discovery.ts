@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { schema, type Db } from "../db/index.js";
@@ -32,12 +32,23 @@ const pageSchema = z.object({
   ),
 });
 
-const statesSchema = z.object({
+export const repositoryStateSchema = z.object({
   id: z.string(),
   isArchived: z.boolean(),
   hasIssuesEnabled: z.boolean(),
   issues: z.object({ totalCount: z.number() }),
 });
+
+/** Why a repository is never synced (SPEC §5.3), or undefined when it is. */
+export function skipReason(
+  state: z.infer<typeof repositoryStateSchema>,
+): string | undefined {
+  return state.isArchived
+    ? "archived"
+    : !state.hasIssuesEnabled
+      ? "issues disabled"
+      : undefined;
+}
 
 interface Listed {
   id: number;
@@ -53,6 +64,11 @@ export interface DiscoveryOptions {
   /** Whether the installation is active now (SPEC FR-3). */
   isActive: (installationId: number) => boolean;
   logger: Logger;
+  /**
+   * Called after each discovery with the installation's repos that are
+   * `pending`, so their initial sync (SPEC §6.1) can be queued.
+   */
+  onPending: (repos: { id: string; installationId: number }[]) => void;
   now?: () => number;
 }
 
@@ -95,6 +111,7 @@ export function createDiscovery({
   installations: github,
   isActive,
   logger,
+  onPending,
   now = Date.now,
 }: DiscoveryOptions): Discovery {
   // The last answer for each page of each installation's list.
@@ -146,9 +163,9 @@ export function createDiscovery({
           ids: batch.map((repo) => repo.nodeId),
         }),
       );
-      const states = new Map<string, z.infer<typeof statesSchema>>();
+      const states = new Map<string, z.infer<typeof repositoryStateSchema>>();
       for (const node of data.nodes) {
-        const parsed = statesSchema.safeParse(node);
+        const parsed = repositoryStateSchema.safeParse(node);
         if (parsed.success) states.set(parsed.data.id, parsed.data);
       }
       for (const repo of batch) {
@@ -160,15 +177,14 @@ export function createDiscovery({
           );
           continue;
         }
+        const reason = skipReason(state);
         outcomes.set(
           repo.nodeId,
-          state.isArchived
-            ? { state: "skipped", detail: "archived" }
-            : !state.hasIssuesEnabled
-              ? { state: "skipped", detail: "issues disabled" }
-              : state.issues.totalCount === 0
-                ? { state: "ready" }
-                : { state: "pending", openIssues: state.issues.totalCount },
+          reason !== undefined
+            ? { state: "skipped", detail: reason }
+            : state.issues.totalCount === 0
+              ? { state: "ready" }
+              : { state: "pending", openIssues: state.issues.totalCount },
         );
       }
     }
@@ -323,6 +339,18 @@ export function createDiscovery({
       logger.info(
         { installationId, listed: listed.length, ...counts },
         "repositories discovered",
+      );
+      onPending(
+        db
+          .select({ id: repos.id, installationId: repos.installationId })
+          .from(repos)
+          .where(
+            and(
+              eq(repos.installationId, installationId),
+              eq(repos.syncState, "pending"),
+            ),
+          )
+          .all(),
       );
       return "discovered";
     },

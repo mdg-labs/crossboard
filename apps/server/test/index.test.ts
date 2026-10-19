@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queries } from "../src/github/index.js";
+import { createFakeSyncGithub } from "./sync-fake.js";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
 import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
 import { openAndMigrate, schema } from "../src/db/index.js";
@@ -347,25 +348,23 @@ describe("process entry", () => {
       CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
       CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
     });
-    const repoStates = http.post(`${FAKE_API_URL}/graphql`, () =>
-      HttpResponse.json({
-        data: {
-          rateLimit: {
-            cost: 1,
-            remaining: 4999,
-            resetAt: "2026-01-01T00:00:00Z",
-          },
-          nodes: [
-            {
-              id: "R_1",
-              isArchived: false,
-              hasIssuesEnabled: true,
-              issues: { totalCount: 3 },
-            },
-          ],
+    const github = createFakeSyncGithub();
+    // The repository the installation lists, with the three open issues
+    // discovery counts and the sync then stores.
+    const repoWithIssues = () => {
+      github.world.repos = [
+        {
+          name: "octocat/repo-1",
+          id: "R_1",
+          issues: [1, 2, 3].map((number) => ({
+            id: `I_${String(number)}`,
+            repo: "octocat/repo-1",
+            number,
+          })),
         },
-      }),
-    );
+      ];
+      return [github.graphql];
+    };
     const repos = (entry: Awaited<ReturnType<typeof start>>) =>
       entry.database.sqlite
         .prepare(
@@ -388,7 +387,15 @@ describe("process entry", () => {
       updatedAt: 1,
     });
 
-    it("discovers the repositories of every active installation at startup", async () => {
+    const readyWithIssues = (entry: Awaited<ReturnType<typeof start>>) =>
+      repos(entry).length > 0 &&
+      (repos(entry)[0] as { sync_state: string }).sync_state === "ready";
+    const issueIds = (entry: Awaited<ReturnType<typeof start>>) =>
+      entry.database.sqlite
+        .prepare("SELECT id FROM issues ORDER BY number")
+        .all();
+
+    it("discovers the repositories of every active installation at startup and syncs them", async () => {
       const seed = openAndMigrate(dataDir);
       seed.db
         .insert(schema.installations)
@@ -401,24 +408,72 @@ describe("process entry", () => {
       stubEnv(discoveryEnv());
       const fake = createFakeGithub();
       fake.listen();
-      fake.server.use(repoStates);
+      fake.server.use(...repoWithIssues());
       try {
         const entry = await start();
-        await until(() => repos(entry).length > 0);
+        await until(() => readyWithIssues(entry));
         expect(repos(entry)).toEqual([
           {
             id: "R_1",
             installation_id: INSTALLATION_ID,
-            sync_state: "pending",
+            sync_state: "ready",
             open_issue_count: 3,
           },
+        ]);
+        expect(issueIds(entry)).toEqual([
+          { id: "I_1" },
+          { id: "I_2" },
+          { id: "I_3" },
         ]);
       } finally {
         fake.close();
       }
     });
 
-    it("discovers an installation when an access computation makes it active", async () => {
+    it("resumes a repository a restart interrupted while it was syncing", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.db
+        .insert(schema.repos)
+        .values({
+          id: "R_1",
+          databaseId: 1,
+          installationId: INSTALLATION_ID,
+          owner: "octocat",
+          name: "repo-1",
+          private: false,
+          syncState: "syncing",
+          openIssueCount: 3,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(...repoWithIssues());
+      try {
+        const entry = await start();
+        await until(() => readyWithIssues(entry));
+        expect(repos(entry)).toEqual([
+          {
+            id: "R_1",
+            installation_id: INSTALLATION_ID,
+            sync_state: "ready",
+            open_issue_count: 3,
+          },
+        ]);
+        expect(issueIds(entry)).toHaveLength(3);
+      } finally {
+        fake.close();
+      }
+    });
+
+    it("discovers and syncs an installation when an access computation makes it active", async () => {
       const seed = openAndMigrate(dataDir);
       const live = signIn(seed.db, addUser(seed.db, "octocat").id);
       storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, live.userId, {
@@ -433,7 +488,7 @@ describe("process entry", () => {
       const fake = createFakeGithub();
       fake.listen();
       fake.server.use(
-        repoStates,
+        ...repoWithIssues(),
         ...accessHandlers({
           ghu_octocat: {
             installations: [{ id: INSTALLATION_ID, login: "octocat-org" }],
@@ -449,20 +504,16 @@ describe("process entry", () => {
         const entry = await start();
         expect(repos(entry)).toEqual([]);
         expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
-        await until(
-          () =>
-            repos(entry).length > 0 &&
-            (repos(entry)[0] as { open_issue_count: number })
-              .open_issue_count === 3,
-        );
+        await until(() => readyWithIssues(entry));
         expect(repos(entry)).toEqual([
           {
             id: "R_1",
             installation_id: INSTALLATION_ID,
-            sync_state: "pending",
+            sync_state: "ready",
             open_issue_count: 3,
           },
         ]);
+        expect(issueIds(entry)).toHaveLength(3);
       } finally {
         fake.close();
       }

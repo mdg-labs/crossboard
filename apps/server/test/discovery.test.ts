@@ -68,6 +68,7 @@ let listRequests: {
 let graphqlBatches: number[];
 let graphqlFails: boolean;
 let active: Set<number>;
+let queued: { id: string; installationId: number }[][];
 
 beforeAll(() => fake.listen());
 afterAll(() => fake.close());
@@ -90,6 +91,7 @@ beforeEach(() => {
   graphqlBatches = [];
   graphqlFails = false;
   active = new Set();
+  queued = [];
   fake.server.use(
     http.post(
       `${FAKE_API_URL}/app/installations/:installationId/access_tokens`,
@@ -189,6 +191,7 @@ function build(now?: () => number) {
     installations,
     isActive: (id) => active.has(id),
     logger,
+    onPending: (pending) => queued.push(pending),
     ...(now === undefined ? {} : { now }),
   });
   return { discovery, logger };
@@ -300,6 +303,26 @@ describe("repository discovery", () => {
       syncDetail: null,
       openIssueCount: 42,
     });
+  });
+
+  it("hands the installation's pending repos on to be synced", async () => {
+    addInstallation(1);
+    listing[1] = [
+      { id: 1, owner: "acme", name: "old", archived: true, openIssues: 4 },
+      { id: 2, owner: "acme", name: "empty", openIssues: 0 },
+      { id: 3, owner: "acme", name: "busy", openIssues: 42 },
+    ];
+    const { discovery } = build();
+    await discovery.discover(1);
+    expect(queued).toEqual([[{ id: "R_3", installationId: 1 }]]);
+  });
+
+  it("hands nothing on for an installation that is not active", async () => {
+    addInstallation(1);
+    active.clear();
+    const { discovery } = build();
+    await discovery.discover(1);
+    expect(queued).toEqual([]);
   });
 
   it("sends the stored ETag of each page and keeps the repos when GitHub answers 304", async () => {

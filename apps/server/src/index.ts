@@ -28,6 +28,12 @@ import {
   enqueueDiscovery,
   registerDiscoveryJob,
 } from "./sync/discovery.js";
+import {
+  createSync,
+  enqueueSync,
+  enqueueSyncAtStart,
+  registerSyncJob,
+} from "./sync/sync.js";
 import { readServerVersion } from "./version.js";
 import type { Logger } from "pino";
 
@@ -99,12 +105,25 @@ export const installations = createInstallationClient({
   credentials: () => setup.credentials(),
 });
 
+const isActive = (installationId: number) =>
+  activeInstallationIds(database.db, setup.allowlist).has(installationId);
+
+export const sync = createSync({
+  db: database.db,
+  installations,
+  isActive,
+  logger,
+});
+registerSyncJob(jobs, sync);
+
 export const discovery = createDiscovery({
   db: database.db,
   installations,
-  isActive: (installationId) =>
-    activeInstallationIds(database.db, setup.allowlist).has(installationId),
+  isActive,
   logger,
+  onPending: (pending) => {
+    for (const repo of pending) enqueueSync(jobs, repo);
+  },
 });
 registerDiscoveryJob(jobs, discovery);
 
@@ -126,10 +145,12 @@ export const access = createAccess({
 });
 registerAccessJob(jobs, access, database.db, logger);
 
-// Every active installation is discovered again at startup, ahead of any sync.
+// Every active installation is discovered again at startup, then the repos a
+// restart left `pending` or `syncing` are synced.
 for (const id of activeInstallationIds(database.db, setup.allowlist)) {
   enqueueDiscovery(jobs, id);
 }
+enqueueSyncAtStart(jobs, database.db, setup.allowlist);
 
 const app = createApp({
   logger,
