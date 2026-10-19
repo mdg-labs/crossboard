@@ -183,6 +183,10 @@ export const discovery = createDiscovery({
 registerDiscoveryJob(jobs, discovery, logger);
 registerDiscoverySchedule(jobs, database.db, isActive);
 
+const discoverNow = (installationIds: number[]) => {
+  for (const id of installationIds) enqueueDiscovery(jobs, id);
+};
+
 export const access = createAccess({
   db: database.db,
   github,
@@ -195,9 +199,10 @@ export const access = createAccess({
     appSecret: config.appSecret,
     logger,
   }),
-  onActivated: (installationIds) => {
-    for (const id of installationIds) enqueueDiscovery(jobs, id);
-  },
+  // An installation that became active, or that gained a repo this
+  // computation recorded first, is discovered right away.
+  onActivated: discoverNow,
+  onReposAdded: discoverNow,
 });
 registerAccessJob(jobs, access, database.db, logger);
 

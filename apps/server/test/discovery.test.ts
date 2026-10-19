@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { http, HttpResponse } from "msw";
 import {
   afterAll,
@@ -31,6 +32,7 @@ import {
 } from "../src/sync/discovery.js";
 import { assertReadOnlyDocument } from "../src/github/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
+import { addUser } from "./sign-in.js";
 import {
   APP_ID,
   APP_PRIVATE_KEY,
@@ -405,6 +407,44 @@ describe("repository discovery", () => {
     expect(graphqlBatches).toEqual([]);
   });
 
+  it("keeps the state of a repo a sync moved on while the GitHub calls ran", async () => {
+    addInstallation(1);
+    database.db
+      .insert(schema.repos)
+      .values({
+        id: "R_1",
+        databaseId: 1,
+        installationId: 1,
+        owner: "acme",
+        name: "r",
+        private: false,
+        syncState: "pending",
+        openIssueCount: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    listing[1] = [{ id: 1, owner: "acme", name: "r", openIssues: 4 }];
+    fake.server.use(
+      http.post(
+        `${FAKE_API_URL}/graphql`,
+        () => {
+          database.db
+            .update(schema.repos)
+            .set({ syncState: "syncing" })
+            .where(eq(schema.repos.id, "R_1"))
+            .run();
+          return undefined;
+        },
+        { once: true },
+      ),
+    );
+    const { discovery } = build();
+    await discovery.discover(1);
+    expect(repoRow(1)).toMatchObject({ syncState: "syncing" });
+    expect(queued).toEqual([[]]);
+  });
+
   it("moves a skipped repo to pending once it is no longer archived", async () => {
     addInstallation(1);
     listing[1] = [{ id: 1, owner: "acme", name: "r", archived: true }];
@@ -482,12 +522,13 @@ describe("repository discovery", () => {
 
   it("leaves a repo that clashes with a stored one by name out", async () => {
     addInstallation(1);
+    addInstallation(2);
     database.db
       .insert(schema.repos)
       .values({
         id: "R_99",
         databaseId: 99,
-        installationId: 1,
+        installationId: 2,
         owner: "acme",
         name: "r",
         private: false,
@@ -576,13 +617,14 @@ describe("repository discovery", () => {
 
   it("keeps a renamed repo's stored name when it clashes with a stale row, and records the rest", async () => {
     addInstallation(1);
-    const stored = (id: number, name: string) =>
+    addInstallation(2);
+    const stored = (id: number, name: string, installationId: number) =>
       database.db
         .insert(schema.repos)
         .values({
           id: `R_${String(id)}`,
           databaseId: id,
-          installationId: 1,
+          installationId,
           owner: "acme",
           name,
           private: false,
@@ -592,8 +634,8 @@ describe("repository discovery", () => {
           updatedAt: 1,
         })
         .run();
-    stored(1, "r");
-    stored(2, "old");
+    stored(1, "r", 2);
+    stored(2, "old", 1);
     listing[1] = [
       { id: 2, owner: "acme", name: "r", private: true, openIssues: 3 },
       { id: 3, owner: "acme", name: "fresh", openIssues: 1 },
@@ -607,6 +649,378 @@ describe("repository discovery", () => {
     });
     expect(repoRow(1)?.name).toBe("r");
     expect(repoRow(3)?.name).toBe("fresh");
+  });
+
+  describe("a stored repo the listing no longer contains", () => {
+    const store = (
+      id: number,
+      installationId: number,
+      extra: Partial<typeof schema.repos.$inferInsert> = {},
+    ) =>
+      database.db
+        .insert(schema.repos)
+        .values({
+          id: `R_${String(id)}`,
+          databaseId: id,
+          installationId,
+          owner: "acme",
+          name: `repo-${String(id)}`,
+          private: false,
+          syncState: "pending",
+          openIssueCount: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          ...extra,
+        })
+        .run();
+    const count = (table: SQLiteTable) =>
+      database.db.select().from(table).all().length;
+
+    it("is purged with its access, issues and dependencies, and boards, columns and saved views stay", async () => {
+      addInstallation(1);
+      const alice = addUser(database.db, "alice");
+      store(1, 1);
+      store(2, 1, { syncState: "ready" });
+      database.db
+        .insert(schema.userRepoAccess)
+        .values([
+          { userId: alice.id, repoId: "R_1", computedAt: 1 },
+          { userId: alice.id, repoId: "R_2", computedAt: 1 },
+        ])
+        .run();
+      database.db
+        .insert(schema.issues)
+        .values({
+          id: "I_2",
+          databaseId: 5,
+          repoId: "R_2",
+          number: 1,
+          title: "t",
+          url: "https://github.test/x",
+          subTotal: 0,
+          subCompleted: 0,
+          blockedByTotal: 0,
+          blockingTotal: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          syncedAt: 1,
+        })
+        .run();
+      database.db
+        .insert(schema.issueDeps)
+        .values({ blockedId: "I_2", blockingId: "I_elsewhere" })
+        .run();
+      const board = database.db
+        .insert(schema.boards)
+        .values({
+          userId: alice.id,
+          name: "b",
+          baseFilter: "repo:acme/repo-1",
+          sort: "updated",
+          subIssueMode: "flat",
+          showOther: false,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .returning()
+        .get();
+      database.db
+        .insert(schema.boardColumns)
+        .values({ boardId: board.id, position: 0, name: "c", filter: "x" })
+        .run();
+      database.db
+        .insert(schema.savedViews)
+        .values({
+          userId: alice.id,
+          name: "v",
+          filter: "repo:acme/repo-1",
+          sort: "updated",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      listing[1] = [{ id: 3, owner: "acme", name: "kept", openIssues: 1 }];
+
+      const { discovery } = build();
+      expect(await discovery.discover(1)).toBe("discovered");
+
+      expect(allRepos().map((row) => row.id)).toEqual(["R_3"]);
+      expect(count(schema.userRepoAccess)).toBe(0);
+      expect(count(schema.issues)).toBe(0);
+      expect(count(schema.issueDeps)).toBe(0);
+      expect(count(schema.boards)).toBe(1);
+      expect(count(schema.boardColumns)).toBe(1);
+      expect(count(schema.savedViews)).toBe(1);
+      expect(queued).toEqual([[{ id: "R_3", installationId: 1 }]]);
+    });
+
+    it("is kept when it belongs to another installation", async () => {
+      addInstallation(1);
+      addInstallation(2);
+      store(1, 2);
+      listing[1] = [{ id: 3, owner: "acme", name: "kept" }];
+      const { discovery } = build();
+      await discovery.discover(1);
+      expect(
+        allRepos()
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["R_1", "R_3"]);
+    });
+
+    it("is kept when it was stored after the listing began, and purged by the next discovery", async () => {
+      addInstallation(1);
+      store(1, 1);
+      listing[1] = [{ id: 3, owner: "acme", name: "kept" }];
+      let clock = 1000;
+      fake.server.use(
+        http.get(
+          `${FAKE_API_URL}/installation/repositories`,
+          () => {
+            store(2, 1, { createdAt: 1001 });
+            return undefined;
+          },
+          { once: true },
+        ),
+      );
+      const { discovery } = build(() => clock);
+      await discovery.discover(1);
+      expect(
+        allRepos()
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["R_2", "R_3"]);
+      clock = 2000;
+      listingVersion++;
+      await discovery.discover(1);
+      expect(allRepos().map((row) => row.id)).toEqual(["R_3"]);
+    });
+
+    it("is kept when listing the repositories fails", async () => {
+      addInstallation(1);
+      store(1, 1);
+      fake.server.use(
+        http.get(`${FAKE_API_URL}/installation/repositories`, () =>
+          HttpResponse.json({ message: "bad gateway" }, { status: 502 }),
+        ),
+      );
+      const { discovery } = build();
+      await expect(discovery.discover(1)).rejects.toThrow();
+      expect(allRepos().map((row) => row.id)).toEqual(["R_1"]);
+    });
+
+    // The first request for page 1 is the first listing; the next one is the
+    // second listing, which `answer` replaces. A request it returns nothing
+    // for is served by the default handler.
+    const secondListing = (
+      answer: (page: number) => Response | undefined,
+    ): void => {
+      let firstPages = 0;
+      fake.server.use(
+        http.get(`${FAKE_API_URL}/installation/repositories`, ({ request }) => {
+          const page = Number(new URL(request.url).searchParams.get("page"));
+          if (page === 1) firstPages++;
+          return firstPages < 2 ? undefined : answer(page);
+        }),
+      );
+    };
+    const entry = (id: number) => ({
+      id,
+      node_id: `R_${String(id)}`,
+      name: `repo-${String(id)}`,
+      owner: { id: 1, login: "acme" },
+      private: false,
+    });
+    const warned = () =>
+      logs.some(
+        (log) =>
+          log.level === 40 &&
+          String(log.msg).includes("could not be confirmed removed"),
+      );
+
+    it("keeps a repo that is still installed when the listing shifts between its pages", async () => {
+      addInstallation(1);
+      const all = Array.from({ length: 150 }, (_, index) => ({
+        id: index + 1,
+        owner: "acme",
+        name: `repo-${String(index + 1)}`,
+      }));
+      listing[1] = all;
+      for (const repo of all) store(repo.id, 1, { syncState: "ready" });
+      let shifted = false;
+      fake.server.use(
+        http.get(`${FAKE_API_URL}/installation/repositories`, ({ request }) => {
+          const page = new URL(request.url).searchParams.get("page");
+          if (!shifted && page === "2") {
+            shifted = true;
+            listing[1] = all.slice(1);
+          } else if (shifted && page === "1") listing[1] = all;
+          return undefined;
+        }),
+      );
+      const { discovery } = build();
+      expect(await discovery.discover(1)).toBe("discovered");
+      expect(shifted).toBe(true);
+      expect(allRepos()).toHaveLength(150);
+      expect(repoRow(101)).toBeDefined();
+    });
+
+    it("is purged when the installation token can still read it, as a public repo outside the selection", async () => {
+      addInstallation(1);
+      store(1, 1);
+      store(2, 1, { syncState: "ready" });
+      listing[1] = [{ id: 4, owner: "acme", name: "kept" }];
+      fake.server.use(
+        http.post(`${FAKE_API_URL}/graphql`, async ({ request }) => {
+          const { variables } = (await request.json()) as {
+            variables: { ids: string[] };
+          };
+          return HttpResponse.json({
+            data: {
+              rateLimit: { cost: 1, remaining: 1 },
+              nodes: variables.ids.map((id) => ({
+                id,
+                isArchived: false,
+                hasIssuesEnabled: true,
+                issues: { totalCount: 0 },
+              })),
+            },
+          });
+        }),
+      );
+      const { discovery } = build();
+      await discovery.discover(1);
+      expect(
+        allRepos()
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["R_4"]);
+    });
+
+    it("keeps every missing repo, and still applies the rest, when the second listing fails", async () => {
+      addInstallation(1);
+      store(1, 1);
+      store(2, 1, { syncState: "ready" });
+      listing[1] = [{ id: 2, owner: "acme", name: "renamed" }];
+      secondListing(() =>
+        HttpResponse.json({ message: "bad gateway" }, { status: 502 }),
+      );
+      const { discovery } = build();
+      expect(await discovery.discover(1)).toBe("discovered");
+      expect(
+        allRepos()
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["R_1", "R_2"]);
+      expect(repoRow(2)?.name).toBe("renamed");
+      expect(warned()).toBe(true);
+    });
+
+    it("keeps every missing repo when the second listing's total_count changes between pages", async () => {
+      addInstallation(1);
+      store(1, 1);
+      listing[1] = [{ id: 4, owner: "acme", name: "kept" }];
+      secondListing((page) =>
+        page === 1
+          ? HttpResponse.json({
+              total_count: 101,
+              repositories: Array.from({ length: 100 }, (_, i) =>
+                entry(1000 + i),
+              ),
+            })
+          : HttpResponse.json({
+              total_count: 102,
+              repositories: [entry(2000)],
+            }),
+      );
+      const { discovery } = build();
+      await discovery.discover(1);
+      expect(repoRow(1)).toBeDefined();
+      expect(repoRow(4)).toBeDefined();
+      expect(warned()).toBe(true);
+    });
+
+    it.each([
+      ["fewer repos than its total_count", 5, [4, 5, 6]],
+      ["more repos than its total_count", 1, [4, 5, 6]],
+    ])(
+      "keeps every missing repo when the second listing has %s",
+      async (_name, total, ids) => {
+        addInstallation(1);
+        store(1, 1);
+        listing[1] = [{ id: 4, owner: "acme", name: "kept" }];
+        secondListing(() =>
+          HttpResponse.json({
+            total_count: total,
+            repositories: ids.map(entry),
+          }),
+        );
+        const { discovery } = build();
+        await discovery.discover(1);
+        expect(repoRow(1)).toBeDefined();
+        expect(warned()).toBe(true);
+      },
+    );
+
+    it("keeps every missing repo when the second listing carries no total_count", async () => {
+      addInstallation(1);
+      store(1, 1);
+      listing[1] = [{ id: 4, owner: "acme", name: "kept" }];
+      secondListing(() => HttpResponse.json({ repositories: [entry(4)] }));
+      const { discovery } = build();
+      await discovery.discover(1);
+      expect(repoRow(1)).toBeDefined();
+      expect(warned()).toBe(true);
+    });
+
+    it("lists only once when nothing is missing from the listing", async () => {
+      addInstallation(1);
+      store(1, 1, { syncState: "ready" });
+      listing[1] = [{ id: 1, owner: "acme", name: "repo-1" }];
+      const { discovery } = build();
+      await discovery.discover(1);
+      expect(listRequests).toHaveLength(1);
+    });
+
+    it("is purged only when both listings lack it", async () => {
+      addInstallation(1);
+      for (const id of [1, 2, 3]) store(id, 1, { syncState: "ready" });
+      listing[1] = [{ id: 4, owner: "acme", name: "kept" }];
+      secondListing(() =>
+        HttpResponse.json({
+          total_count: 2,
+          repositories: [entry(2), entry(4)],
+        }),
+      );
+      const { discovery } = build();
+      await discovery.discover(1);
+      expect(
+        allRepos()
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["R_2", "R_4"]);
+    });
+
+    it("is purged by the discovery an access computation queues for the repo it re-created", async () => {
+      addInstallation(1);
+      const { discovery, logger } = build();
+      const jobs = createJobs({ logger });
+      registerDiscoveryJob(jobs, discovery, logger);
+      listing[1] = [];
+      // what a computation in flight stores after a purge: the repo, pending,
+      // with access, although GitHub no longer lists it
+      store(1, 1);
+      const alice = addUser(database.db, "alice");
+      database.db
+        .insert(schema.userRepoAccess)
+        .values({ userId: alice.id, repoId: "R_1", computedAt: 1 })
+        .run();
+      jobs.start();
+      expect(enqueueDiscovery(jobs, 1)).toBe(true);
+      await jobs.stop();
+      expect(allRepos()).toEqual([]);
+      expect(count(schema.userRepoAccess)).toBe(0);
+    });
   });
 
   it("does not log an installation token", async () => {

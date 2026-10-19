@@ -22,7 +22,7 @@ import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
 import { openAndMigrate, schema } from "../src/db/index.js";
 import { accessibleRepos, hasRepoAccess } from "../src/access/index.js";
 import { addUser, signIn } from "./sign-in.js";
-import { accessHandlers, storeTokens } from "./access.js";
+import { accessHandlers, repoPayload, storeTokens } from "./access.js";
 import {
   APP_ID,
   APP_PRIVATE_KEY,
@@ -1116,6 +1116,127 @@ describe("process entry", () => {
       } finally {
         fake.close();
       }
+    });
+
+    describe("a repository the hourly access job records first", () => {
+      const seedActiveInstallation = () => {
+        const seed = openAndMigrate(dataDir);
+        const live = signIn(seed.db, addUser(seed.db, "octocat").id);
+        storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, live.userId, {
+          access: "ghu_octocat",
+        });
+        seed.db
+          .insert(schema.installations)
+          .values(installationRow(INSTALLATION_ID, "octocat"))
+          .run();
+        seed.sqlite.close();
+        return live;
+      };
+      const reachable = (
+        ...entries: { id: number; nodeId: string; name: string }[]
+      ) =>
+        accessHandlers({
+          ghu_octocat: {
+            installations: [{ id: INSTALLATION_ID, login: "octocat" }],
+            repos: {
+              [INSTALLATION_ID]: entries.map((entry) => ({
+                ...entry,
+                owner: "octocat",
+              })),
+            },
+          },
+        });
+
+      it("is discovered and synced right away for an installation that was already active", async () => {
+        seedActiveInstallation();
+        stubEnv(discoveryEnv());
+        const fake = createFakeGithub();
+        fake.listen();
+        let appeared = false;
+        let listRequests = 0;
+        fake.server.use(
+          ...repoWithIssues(),
+          ...reachable({ id: 1, nodeId: "R_1", name: "repo-1" }),
+          http.get(`${FAKE_API_URL}/installation/repositories`, () => {
+            listRequests++;
+            return HttpResponse.json({
+              total_count: 1,
+              repositories: appeared
+                ? [
+                    repoPayload({
+                      id: 1,
+                      nodeId: "R_1",
+                      owner: "octocat",
+                      name: "repo-1",
+                    }),
+                  ]
+                : [],
+            });
+          }),
+        );
+        try {
+          const entry = await start();
+          await until(() => listRequests > 0);
+          appeared = true;
+          expect(repos(entry)).toEqual([]);
+          expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+          await until(() => readyWithIssues(entry));
+          expect(repos(entry)).toEqual([
+            {
+              id: "R_1",
+              installation_id: INSTALLATION_ID,
+              sync_state: "ready",
+              open_issue_count: 3,
+            },
+          ]);
+          expect(issueIds(entry)).toHaveLength(3);
+          expect(listRequests).toBe(2);
+        } finally {
+          fake.close();
+        }
+      });
+
+      it("is removed again, with its access, when GitHub no longer lists it", async () => {
+        const live = seedActiveInstallation();
+        stubEnv(discoveryEnv());
+        const fake = createFakeGithub();
+        fake.listen();
+        fake.server.use(
+          ...repoWithIssues(),
+          ...reachable(
+            { id: 1, nodeId: "R_1", name: "repo-1" },
+            { id: 9, nodeId: "R_9", name: "repo-9" },
+          ),
+        );
+        try {
+          const entry = await start();
+          expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+          const computed = () =>
+            entry.database.sqlite
+              .prepare("SELECT count(*) FROM user_installations")
+              .pluck()
+              .get() === 1;
+          await until(
+            () =>
+              computed() && readyWithIssues(entry) && repos(entry).length === 1,
+          );
+          expect(repos(entry)).toEqual([
+            {
+              id: "R_1",
+              installation_id: INSTALLATION_ID,
+              sync_state: "ready",
+              open_issue_count: 3,
+            },
+          ]);
+          expect(
+            entry.database.sqlite
+              .prepare("SELECT user_id, repo_id FROM user_repo_access")
+              .all(),
+          ).toEqual([{ user_id: live.userId, repo_id: "R_1" }]);
+        } finally {
+          fake.close();
+        }
+      });
     });
   });
 
