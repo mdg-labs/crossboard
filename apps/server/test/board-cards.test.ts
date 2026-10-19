@@ -220,8 +220,8 @@ describe("GET /api/boards/:id/cards", () => {
   });
 
   it("narrows by the base filter and by the ad-hoc q, and answers 400 for a bad q", async () => {
-    const { cookie, repo } = oneUser();
-    const api = addRepo(database, "acme", "api", [1]);
+    const { alice, cookie, repo } = oneUser();
+    const api = addRepo(database, "acme", "api", [alice.id]);
     addIssue(repo, "acme/web", { number: 1, label: "todo" });
     addIssue(api, "acme/api", { number: 2, label: "todo" });
     addIssue(repo, "acme/web", { number: 3, label: "doing" });
