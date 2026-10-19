@@ -38,26 +38,36 @@ describe("shell", () => {
   });
 
   it("renders no <style> element and no style attribute", async () => {
-    // The list sets styles from script (CSSOM), which the CSP allows; the
-    // settings page is where the markup itself must carry none.
+    // The list sets styles from script (CSSOM), which the CSP allows, and so
+    // does the Autocomplete's visually hidden form input; the settings page is
+    // where the rest of the markup itself must carry none.
     const { container } = await renderShell("/settings");
+    const hidden = "input[aria-hidden=true][tabindex='-1']";
     expect(document.querySelectorAll("style")).toHaveLength(0);
-    expect(document.querySelectorAll("[style]")).toHaveLength(0);
+    expect(document.querySelectorAll(`[style]:not(${hidden})`)).toHaveLength(0);
+    container.querySelectorAll(hidden).forEach((input) => input.remove());
     expect(container.innerHTML).not.toMatch(/<style|\sstyle=/);
   });
 
   it("keeps the filter outside the toolbar so arrow keys move the caret", async () => {
     await renderShell();
     const toolbar = screen.getByRole("toolbar");
-    const filter = screen.getByRole("textbox", { name: "Filter issues" });
+    const filter = screen.getByRole("combobox", { name: "Filter issues" });
     expect(toolbar.contains(filter)).toBe(false);
     expect(filter.closest("[data-slot=input-group]")).toBeTruthy();
 
     filter.focus();
-    for (const key of ["ArrowLeft", "ArrowRight", "Home", "End"]) {
+    for (const key of ["ArrowLeft", "ArrowRight"]) {
       const notPrevented = fireEvent.keyDown(filter, { key });
       expect(notPrevented, key).toBe(true);
     }
+    // The Autocomplete moves the caret itself on Home and End.
+    const input = filter as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "label:bug" } });
+    fireEvent.keyDown(filter, { key: "Home" });
+    expect(input.selectionStart).toBe(0);
+    fireEvent.keyDown(filter, { key: "End" });
+    expect(input.selectionStart).toBe(9);
     expect(document.activeElement).toBe(filter);
   });
 

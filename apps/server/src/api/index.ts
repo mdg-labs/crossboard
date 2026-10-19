@@ -4,6 +4,7 @@ import type { Db } from "../db/index.js";
 import type { GithubClient } from "../github/index.js";
 import { createIssueRoutes } from "./issues.js";
 import { createMeRoutes } from "./me.js";
+import { createSuggestRoutes } from "./suggest.js";
 
 export interface ApiOptions {
   version: string;
@@ -19,5 +20,6 @@ export function createApi(options: ApiOptions) {
       c.json({ status: "ok" as const, version: options.version }),
     )
     .route("/", createMeRoutes({ db: options.db, setup: options.setup }))
-    .route("/", createIssueRoutes({ db: options.db }));
+    .route("/", createIssueRoutes({ db: options.db }))
+    .route("/", createSuggestRoutes({ db: options.db }));
 }

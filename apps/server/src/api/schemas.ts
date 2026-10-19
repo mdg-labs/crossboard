@@ -75,3 +75,30 @@ export const issueListSchema = z.object({
 });
 
 export type IssueList = z.infer<typeof issueListSchema>;
+
+/** The qualifiers `GET /api/suggest` completes values for (SPEC FR-20). */
+export const SUGGEST_FIELDS = [
+  "label",
+  "assignee",
+  "author",
+  "repo",
+  "org",
+  "user",
+  "type",
+  "milestone",
+] as const;
+
+export type SuggestField = (typeof SUGGEST_FIELDS)[number];
+
+export const SUGGEST_LIMIT = 20;
+
+export const suggestQuerySchema = z.object({
+  field: z.enum(SUGGEST_FIELDS),
+  prefix: z.string().default(""),
+});
+
+export const suggestionsSchema = z.object({
+  values: z.array(z.string()).max(SUGGEST_LIMIT),
+});
+
+export type Suggestions = z.infer<typeof suggestionsSchema>;

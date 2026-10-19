@@ -55,7 +55,7 @@ test("lists the open issues of both synced repos", async ({ page }) => {
 test("filters the list from the filter input and keeps it in the URL", async ({
   page,
 }) => {
-  const filter = page.getByRole("textbox", { name: "Filter issues" });
+  const filter = page.getByRole("combobox", { name: "Filter issues" });
 
   await filter.fill("label:bug");
   await filter.press("Enter");
@@ -74,7 +74,7 @@ test("filters the list from the filter input and keeps it in the URL", async ({
 test("underlines an invalid filter and keeps the last valid results", async ({
   page,
 }) => {
-  const filter = page.getByRole("textbox", { name: "Filter issues" });
+  const filter = page.getByRole("combobox", { name: "Filter issues" });
   await filter.fill("repo:acme/rocket");
   await filter.press("Enter");
   await expect(rows(page)).toHaveCount(2);
@@ -94,7 +94,7 @@ test("underlines an invalid filter and keeps the last valid results", async ({
 test("a click on a label, an assignee or a repo narrows the filter", async ({
   page,
 }) => {
-  const filter = page.getByRole("textbox", { name: "Filter issues" });
+  const filter = page.getByRole("combobox", { name: "Filter issues" });
 
   await rows(page)
     .filter({ hasText: ISSUES.translate })
@@ -124,7 +124,7 @@ test("a click on a label, an assignee or a repo narrows the filter", async ({
 test("the list's keyboard shortcuts work and leave the filter alone", async ({
   page,
 }) => {
-  const filter = page.getByRole("textbox", { name: "Filter issues" });
+  const filter = page.getByRole("combobox", { name: "Filter issues" });
   const selected = page.locator("tbody tr[aria-current=true]");
   await expect(rows(page)).toHaveCount(5);
 

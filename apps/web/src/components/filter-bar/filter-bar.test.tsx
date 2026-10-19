@@ -47,7 +47,11 @@ function issue(n: number, overrides: Partial<IssueItem> = {}): IssueItem {
   };
 }
 
-function stubIssues(answer: (q: string) => IssueItem[]) {
+function stubIssues(
+  answer: (q: string) => IssueItem[],
+  suggest: (field: string, prefix: string) => Response = () =>
+    Response.json({ values: [] }),
+) {
   const mock = vi.fn(async (input: RequestInfo | URL) => {
     const raw =
       typeof input === "string" || input instanceof URL ? input : input.url;
@@ -55,6 +59,12 @@ function stubIssues(answer: (q: string) => IssueItem[]) {
     if (url.pathname === "/api/issues") {
       const items = answer(url.searchParams.get("q") ?? "");
       return Response.json({ items, total: items.length, warnings: [] });
+    }
+    if (url.pathname === "/api/suggest") {
+      return suggest(
+        url.searchParams.get("field") ?? "",
+        url.searchParams.get("prefix") ?? "",
+      );
     }
     if (url.pathname === "/api/me") {
       return Response.json({
@@ -89,7 +99,7 @@ function renderApp(initial = "/") {
 }
 
 const filterInput = () =>
-  screen.getByRole("textbox", { name: "Filter issues" }) as HTMLInputElement;
+  screen.getByRole("combobox", { name: "Filter issues" }) as HTMLInputElement;
 
 function type(text: string) {
   fireEvent.change(filterInput(), { target: { value: text } });
@@ -195,7 +205,7 @@ describe("the filter input", () => {
   it("shows the filter of the URL and follows it", async () => {
     stubIssues(() => [issue(1)]);
     const history = renderApp("/?q=assignee%3Aada");
-    await screen.findByRole("textbox", { name: "Filter issues" });
+    await screen.findByRole("combobox", { name: "Filter issues" });
     expect(filterInput().value).toBe("assignee:ada");
     await screen.findByText("Issue number 1");
 
@@ -212,11 +222,229 @@ describe("the filter input", () => {
     filterInput().focus();
     filterInput().setSelectionRange(3, 3);
 
-    for (const key of ["ArrowLeft", "ArrowRight", "Home", "End"]) {
+    for (const key of ["ArrowLeft", "ArrowRight"]) {
       expect(fireEvent.keyDown(filterInput(), { key }), key).toBe(true);
     }
+    // The Autocomplete moves the caret itself on Home and End.
+    fireEvent.keyDown(filterInput(), { key: "Home" });
+    expect(filterInput().selectionStart).toBe(0);
+    fireEvent.keyDown(filterInput(), { key: "End" });
+    expect(filterInput().selectionStart).toBe(9);
     expect(document.activeElement).toBe(filterInput());
     expect(filterInput().value).toBe("label:bug");
+  });
+});
+
+const suggestedValues = (mock: ReturnType<typeof stubIssues>): string[] =>
+  mock.mock.calls
+    .map(([input]) => {
+      const raw =
+        typeof input === "string" || input instanceof URL ? input : input.url;
+      return new URL(raw, window.location.origin);
+    })
+    .filter((url) => url.pathname === "/api/suggest")
+    .map(
+      (url) =>
+        `${url.searchParams.get("field")}:${url.searchParams.get("prefix")}`,
+    );
+
+const options = () =>
+  screen.queryAllByRole("option").map((option) => option.textContent);
+
+/** Typing as a keyboard does: the Autocomplete opens only for typed input, not for a bare change. */
+function typeAndFocus(text: string) {
+  filterInput().focus();
+  fireEvent.input(filterInput(), {
+    target: { value: text },
+    inputType: "insertText",
+  });
+}
+
+describe("autocomplete", () => {
+  it("keeps a submit button in the form so Enter still submits it", async () => {
+    stubIssues(() => [issue(1)]);
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    const form = filterInput().closest("form");
+    expect(form?.querySelectorAll("input:not([type=hidden])").length).toBe(2);
+    expect(form?.querySelector("button[type=submit]")).toBeTruthy();
+  });
+
+  it("suggests qualifier names while typing one, and values after choosing it", async () => {
+    const mock = stubIssues(
+      () => [issue(1)],
+      (field) =>
+        Response.json({ values: field === "label" ? ["bug", "docs"] : [] }),
+    );
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("is:open la");
+
+    expect(await screen.findAllByRole("option")).toHaveLength(1);
+    expect(options()).toEqual(["label:"]);
+    expect(suggestedValues(mock)).toEqual([]);
+
+    fireEvent.click(screen.getByRole("option", { name: "label:" }));
+
+    expect(filterInput().value).toBe("is:open label:");
+    await waitFor(() => expect(options()).toEqual(["bug", "docs"]));
+    expect(suggestedValues(mock)).toEqual(["label:"]);
+  });
+
+  it("suggests values after a colon with the typed text as the prefix", async () => {
+    const mock = stubIssues(
+      () => [issue(1)],
+      (_field, prefix) =>
+        Response.json({ values: prefix === "oc" ? ["octocat"] : [] }),
+    );
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("assignee:oc");
+
+    await waitFor(() => expect(options()).toEqual(["octocat"]));
+    expect(suggestedValues(mock)).toEqual(["assignee:oc"]);
+  });
+
+  it("uses the text after the last comma, without quotes, as the prefix", async () => {
+    const mock = stubIssues(
+      () => [issue(1)],
+      () => Response.json({ values: ["good first issue"] }),
+    );
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus('label:bug,"good f');
+
+    await waitFor(() => expect(options()).toEqual(["good first issue"]));
+    expect(suggestedValues(mock)).toEqual(["label:good f"]);
+  });
+
+  it("inserts the chosen value, quoted when it contains a space", async () => {
+    stubIssues(
+      () => [issue(1)],
+      () => Response.json({ values: ["good first issue", "bug"] }),
+    );
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("label:bug,go");
+    fireEvent.click(
+      await screen.findByRole("option", { name: "good first issue" }),
+    );
+
+    expect(filterInput().value).toBe('label:bug,"good first issue"');
+    expect(document.querySelector("[data-error-range]")).toBeNull();
+  });
+
+  it("inserts a value without quotes when it has no space", async () => {
+    stubIssues(
+      () => [issue(1)],
+      () => Response.json({ values: ["octocat"] }),
+    );
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("assignee:oc");
+    fireEvent.click(await screen.findByRole("option", { name: "octocat" }));
+
+    expect(filterInput().value).toBe("assignee:octocat");
+  });
+
+  it("lets the arrow keys and Enter drive the suggestions, not the list or the form", async () => {
+    const mock = stubIssues(
+      () => [issue(1), issue(2)],
+      () => Response.json({ values: ["bug", "docs"] }),
+    );
+    const history = renderApp();
+    await screen.findByText("Issue number 1");
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(selectedRows()[0]?.dataset.issueId).toBe("issue-1");
+
+    typeAndFocus("label:");
+    await waitFor(() => expect(options()).toEqual(["bug", "docs"]));
+    fireEvent.keyDown(filterInput(), { key: "ArrowDown" });
+    fireEvent.keyDown(filterInput(), { key: "ArrowDown" });
+    fireEvent.keyDown(filterInput(), { key: "Enter" });
+
+    expect(filterInput().value).toBe("label:docs");
+    expect(selectedRows()[0]?.dataset.issueId).toBe("issue-1");
+    expect(history.location.search).toBe("");
+    expect(requestedQueries(mock)).toEqual([""]);
+  });
+
+  it("submits the filter on Enter when no suggestion is highlighted", async () => {
+    const mock = stubIssues(
+      () => [issue(1)],
+      () => Response.json({ values: ["bug"] }),
+    );
+    const history = renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("label:b");
+    await waitFor(() => expect(options()).toEqual(["bug"]));
+    fireEvent.keyDown(filterInput(), { key: "Enter" });
+    submit();
+
+    await waitFor(() => expect(history.location.search).toBe("?q=label%3Ab"));
+    await waitFor(() => expect(requestedQueries(mock)).toContain("label:b"));
+  });
+
+  it("keeps what was typed when Escape closes the suggestions", async () => {
+    stubIssues(
+      () => [issue(1)],
+      () => Response.json({ values: ["bug"] }),
+    );
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("label:b");
+    await waitFor(() => expect(options()).toEqual(["bug"]));
+    fireEvent.keyDown(filterInput(), { key: "Escape" });
+    await waitFor(() => expect(options()).toEqual([]));
+    fireEvent.keyDown(filterInput(), { key: "Escape" });
+
+    expect(filterInput().value).toBe("label:b");
+  });
+
+  it("says so when no value matches", async () => {
+    stubIssues(() => [issue(1)]);
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("label:zzz");
+
+    expect(await screen.findByText("No matching values")).toBeTruthy();
+  });
+
+  it("says so when the suggestions cannot be loaded, and keeps the filter usable", async () => {
+    stubIssues(
+      () => [issue(1)],
+      () => new Response(null, { status: 500 }),
+    );
+    const history = renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("label:b");
+
+    expect(await screen.findByText("Suggestions are unavailable")).toBeTruthy();
+    expect(screen.queryByText("No matching values")).toBeNull();
+    submit();
+    await waitFor(() => expect(history.location.search).toBe("?q=label%3Ab"));
+  });
+
+  it("suggests nothing for a qualifier without server values", async () => {
+    const mock = stubIssues(() => [issue(1)]);
+    renderApp();
+    await screen.findByText("Issue number 1");
+
+    typeAndFocus("is:o");
+
+    expect(options()).toEqual([]);
+    expect(screen.queryByText("No matching values")).toBeNull();
+    expect(suggestedValues(mock)).toEqual([]);
   });
 });
 
