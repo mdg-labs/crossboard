@@ -1,8 +1,9 @@
-import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { FilterBar } from "@/components/filter-bar/filter-bar";
 import { Toolbar, ToolbarButton, ToolbarGroup } from "@/components/ui/toolbar";
 import { UserMenu } from "@/components/top-bar/user-menu";
+import { ViewSwitcher } from "@/components/view-switcher/view-switcher";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function TopBar(): React.ReactElement {
@@ -13,10 +14,7 @@ export function TopBar(): React.ReactElement {
         className="contents border-0 bg-transparent p-0"
       >
         <ToolbarGroup className="col-start-1 row-start-1">
-          <ToolbarButton render={<Button size="sm" variant="ghost" />}>
-            All issues
-            <ChevronDownIcon aria-hidden="true" />
-          </ToolbarButton>
+          <ViewSwitcher />
         </ToolbarGroup>
         <ToolbarGroup className="col-start-3 row-start-1">
           <Tooltip>

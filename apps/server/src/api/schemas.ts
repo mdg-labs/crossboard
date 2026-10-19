@@ -102,3 +102,41 @@ export const suggestionsSchema = z.object({
 });
 
 export type Suggestions = z.infer<typeof suggestionsSchema>;
+
+export const VIEW_NAME_MAX = 100;
+
+const viewNameSchema = z.string().trim().min(1).max(VIEW_NAME_MAX);
+
+/** A saved view of SPEC FR-22: a name for a filter and a sort. */
+export const viewSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  filter: z.string(),
+  sort: sortSchema,
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export type View = z.infer<typeof viewSchema>;
+
+export const viewListSchema = z.object({ items: z.array(viewSchema) });
+
+export const viewCreateSchema = z.object({
+  name: viewNameSchema,
+  filter: z.string().default(""),
+  sort: sortSchema.default(DEFAULT_SORT),
+});
+
+export const viewPatchSchema = z
+  .object({
+    name: viewNameSchema,
+    filter: z.string(),
+    sort: sortSchema,
+  })
+  .partial()
+  .refine(
+    (patch) => Object.values(patch).some((value) => value !== undefined),
+    {
+      message: "Send at least one of name, filter and sort",
+    },
+  );

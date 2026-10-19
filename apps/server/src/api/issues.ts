@@ -4,7 +4,7 @@ import { Hono } from "hono";
 import type { SessionEnv } from "../auth/sessions/index.js";
 import { schema, type Db } from "../db/index.js";
 import { loadAccessibleIssues, sortIssues } from "../issues/index.js";
-import { errorResponse, type ApiErrorBody } from "./errors.js";
+import { errorResponse, invalidQueryResponse } from "./errors.js";
 import { issueListQuerySchema, type IssueList } from "./schemas.js";
 import { validate } from "./validator.js";
 
@@ -44,15 +44,7 @@ export function createIssueRoutes({ db }: IssuesOptions) {
 
       const parsed = parse(q.trim() === "" ? DEFAULT_FILTER : q);
       if ("error" in parsed) {
-        const body: ApiErrorBody & { error: { start: number; end: number } } = {
-          error: {
-            code: "invalid_query",
-            message: parsed.error.message,
-            start: parsed.error.start,
-            end: parsed.error.end,
-          },
-        };
-        return c.json(body, 400);
+        return invalidQueryResponse(c, parsed.error);
       }
 
       const context = { viewerLogin: user.login };
