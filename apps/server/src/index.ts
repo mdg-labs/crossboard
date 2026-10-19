@@ -106,7 +106,8 @@ try {
   process.exit(1);
 }
 
-// What the sync jobs and the routes that read GitHub data fetch through.
+// The one installation client of the process, with one installation-token
+// cache: the sync jobs and the routes that read GitHub data fetch through it.
 export const installations = createInstallationClient({
   github,
   credentials: () => setup.credentials(),
@@ -178,6 +179,7 @@ const app = createApp({
   logger,
   db: database.db,
   github,
+  installations,
   version: readServerVersion(),
   webRoot,
   setup,

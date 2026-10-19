@@ -55,6 +55,103 @@ export const issueItemSchema = z.object({
 
 export type IssueItem = z.infer<typeof issueItemSchema>;
 
+export const issueStateSchema = z.enum(["OPEN", "CLOSED"]);
+
+/**
+ * One entry of a `blockedBy` / `blocking` list (SPEC FR-23). Only relations in
+ * a repo the viewer can read are listed; the rest are counted in
+ * `notAccessible` (FR-24). `synced` marks an entry that has a detail view
+ * (FR-39); a closed or not yet synced issue is listed with `synced: false`.
+ */
+export const issueRelationSchema = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  title: z.string(),
+  state: issueStateSchema,
+  url: z.string(),
+  synced: z.boolean(),
+});
+
+export type IssueRelationEntry = z.infer<typeof issueRelationSchema>;
+
+const relationListSchema = relationCountsSchema.extend({
+  items: z.array(issueRelationSchema),
+});
+
+/**
+ * The summary route's response (SPEC §7.4): the issue item, with the parent's
+ * title and state and the full dependency lists in place of the bare counts.
+ */
+export const issueSummarySchema = issueItemSchema.extend({
+  parent: z
+    .object({
+      owner: z.string(),
+      repo: z.string(),
+      number: z.number().int(),
+      title: z.string(),
+      state: issueStateSchema,
+    })
+    .nullable(),
+  blockedBy: relationListSchema,
+  blocking: relationListSchema,
+});
+
+export type IssueSummary = z.infer<typeof issueSummarySchema>;
+
+/** One comment of the details route (SPEC FR-43); `bodyHtml` is sanitized (FR-41). */
+export const issueCommentSchema = z.object({
+  url: z.string(),
+  createdAt: z.number().int(),
+  /** `ghost` for a deleted account (SPEC §4.3). */
+  author: z.string(),
+  avatarUrl: z.string().nullable(),
+  bodyHtml: z.string(),
+});
+
+export type IssueComment = z.infer<typeof issueCommentSchema>;
+
+export const subIssueSchema = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  title: z.string(),
+  state: issueStateSchema,
+  url: z.string(),
+});
+
+export type SubIssue = z.infer<typeof subIssueSchema>;
+
+/**
+ * The details route's response (SPEC §7.4, FR-42, FR-43): the issue's rendered
+ * body, its most recent comments oldest first, and its first sub-issues.
+ * `commentsTotal` counts every comment, so the UI can show "N earlier
+ * comments"; `subIssues.total` counts every sub-issue on GitHub. Sub-issues in
+ * a repo outside the viewer's access are left out of `items` and counted in
+ * `notAccessible` (SPEC §9.1). `stale` marks a copy that is out of date
+ * because the refetch failed.
+ */
+export const issueDetailsSchema = z.object({
+  bodyHtml: z.string(),
+  comments: z.array(issueCommentSchema),
+  commentsTotal: z.number().int().nonnegative(),
+  subIssues: z.object({
+    total: z.number().int().nonnegative(),
+    notAccessible: z.number().int().nonnegative(),
+    items: z.array(subIssueSchema),
+  }),
+  fetchedAt: z.number().int(),
+  stale: z.boolean(),
+});
+
+export type IssueDetails = z.infer<typeof issueDetailsSchema>;
+
+export const issueParamsSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  number: z.coerce.number().int().min(1),
+});
+
 export const issueListQuerySchema = z.object({
   q: z.string().default(""),
   sort: sortSchema.default(DEFAULT_SORT),
@@ -138,5 +235,79 @@ export const viewPatchSchema = z
     (patch) => Object.values(patch).some((value) => value !== undefined),
     {
       message: "Send at least one of name, filter and sort",
+    },
+  );
+
+export const BOARD_NAME_MAX = 100;
+export const BOARD_COLUMNS_MAX = 20;
+
+export const SUB_ISSUE_MODES = ["collapsed", "expanded"] as const;
+
+export const subIssueModeSchema = z.enum(SUB_ISSUE_MODES);
+
+export type SubIssueMode = z.infer<typeof subIssueModeSchema>;
+
+export const boardNameSchema = z.string().trim().min(1).max(BOARD_NAME_MAX);
+
+const boardColumnInputSchema = z.object({
+  name: boardNameSchema,
+  filter: z.string().default(""),
+});
+
+const boardColumnsInputSchema = z
+  .array(boardColumnInputSchema)
+  .min(1)
+  .max(BOARD_COLUMNS_MAX);
+
+export const boardColumnSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  filter: z.string(),
+});
+
+/** A board of SPEC FR-28: a base filter and ordered columns that are filters. */
+export const boardSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  baseFilter: z.string(),
+  sort: sortSchema,
+  subIssueMode: subIssueModeSchema,
+  showOther: z.boolean(),
+  columns: z.array(boardColumnSchema),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export type Board = z.infer<typeof boardSchema>;
+
+export const boardListSchema = z.object({ items: z.array(boardSchema) });
+
+export const boardCreateSchema = z.object({
+  name: boardNameSchema,
+  baseFilter: z.string().default(""),
+  columns: boardColumnsInputSchema,
+  sort: sortSchema.default(DEFAULT_SORT),
+  subIssueMode: subIssueModeSchema.default("collapsed"),
+  showOther: z.boolean().default(false),
+});
+
+export type BoardCreate = z.infer<typeof boardCreateSchema>;
+
+/** `columns`, when sent, replaces the board's whole column list in order. */
+export const boardPatchSchema = z
+  .object({
+    name: boardNameSchema,
+    baseFilter: z.string(),
+    columns: boardColumnsInputSchema,
+    sort: sortSchema,
+    subIssueMode: subIssueModeSchema,
+    showOther: z.boolean(),
+  })
+  .partial()
+  .refine(
+    (patch) => Object.values(patch).some((value) => value !== undefined),
+    {
+      message:
+        "Send at least one of name, baseFilter, columns, sort, subIssueMode and showOther",
     },
   );

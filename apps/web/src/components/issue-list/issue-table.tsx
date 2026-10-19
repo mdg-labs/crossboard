@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef, useState } from "react";
+import { DetailDrawer } from "@/components/detail/detail-drawer";
 import { isShortcut } from "@/components/filter-bar/keyboard";
 import { IssueRow, ROW_HEIGHT } from "@/components/issue-list/issue-row";
 import {
@@ -9,7 +10,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import type { IssueRef } from "@/lib/issue-detail";
 import type { IssueItem } from "@/lib/issues";
+
+const refOf = (issue: IssueItem): IssueRef => ({
+  owner: issue.repo.owner,
+  repo: issue.repo.name,
+  number: issue.number,
+});
 
 const HEADER_HEIGHT = 40;
 const OVERSCAN = 10;
@@ -48,6 +56,7 @@ export function IssueTable({
   onFilter: (qualifier: string) => void;
 }): React.ReactElement {
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [panel, setPanel] = useState<IssueRef | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -84,50 +93,82 @@ export function IssueTable({
           Math.max(current + (event.key === "j" ? 1 : -1), 0),
           items.length - 1,
         );
-        setSelectedId(items[next]?.id ?? null);
+        const issue = items[next];
+        setSelectedId(issue?.id ?? null);
+        if (issue !== undefined) {
+          setPanel((shown) => (shown === null ? null : refOf(issue)));
+        }
         virtualizer.scrollToIndex(next);
       } else if (event.key === "o" && current >= 0) {
         event.preventDefault();
         window.open(items[current]?.url, "_blank", "noopener,noreferrer");
+      } else if (
+        event.key === "Enter" &&
+        current >= 0 &&
+        !(
+          event.target instanceof Element &&
+          event.target.closest("a, button, summary") !== null
+        )
+      ) {
+        event.preventDefault();
+        const issue = items[current];
+        if (issue !== undefined) {
+          setPanel(refOf(issue));
+        }
       }
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [items, selectedId, virtualizer]);
 
+  const openIssue = (issue: IssueItem) => {
+    setSelectedId(issue.id);
+    setPanel(refOf(issue));
+  };
+
   return (
-    <Table
-      className="min-w-[1500px] table-fixed border-separate border-spacing-0"
-      render={<div className="min-h-0 flex-1 overflow-auto" ref={scrollRef} />}
-    >
-      <TableHeader className="sticky top-0 z-10 bg-background [&_th]:border-b">
-        <TableRow className="border-b-0">
-          {COLUMNS.map((column) => (
-            <TableHead className={column.className} key={column.key}>
-              {column.label}
-            </TableHead>
-          ))}
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {paddingTop > 0 ? (
-          <tr aria-hidden="true" style={{ height: paddingTop }} />
-        ) : null}
-        {rows.map((row) => {
-          const issue = items[row.index];
-          return issue === undefined ? null : (
-            <IssueRow
-              issue={issue}
-              key={issue.id}
-              onFilter={onFilter}
-              selected={issue.id === selectedId}
-            />
-          );
-        })}
-        {paddingBottom > 0 ? (
-          <tr aria-hidden="true" style={{ height: paddingBottom }} />
-        ) : null}
-      </TableBody>
-    </Table>
+    <>
+      <Table
+        className="min-w-[1500px] table-fixed border-separate border-spacing-0"
+        render={
+          <div className="min-h-0 flex-1 overflow-auto" ref={scrollRef} />
+        }
+      >
+        <TableHeader className="sticky top-0 z-10 bg-background [&_th]:border-b">
+          <TableRow className="border-b-0">
+            {COLUMNS.map((column) => (
+              <TableHead className={column.className} key={column.key}>
+                {column.label}
+              </TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {paddingTop > 0 ? (
+            <tr aria-hidden="true" style={{ height: paddingTop }} />
+          ) : null}
+          {rows.map((row) => {
+            const issue = items[row.index];
+            return issue === undefined ? null : (
+              <IssueRow
+                issue={issue}
+                key={issue.id}
+                onFilter={onFilter}
+                onOpen={openIssue}
+                selected={issue.id === selectedId}
+              />
+            );
+          })}
+          {paddingBottom > 0 ? (
+            <tr aria-hidden="true" style={{ height: paddingBottom }} />
+          ) : null}
+        </TableBody>
+      </Table>
+      <DetailDrawer
+        issue={panel}
+        onClose={() => setPanel(null)}
+        onOpenIssue={setPanel}
+      />
+    </>
   );
 }

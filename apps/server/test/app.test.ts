@@ -14,7 +14,7 @@ import { loadConfig } from "../src/config/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
-import { githubEnv, validEnv } from "./helpers.js";
+import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
 import { signIn, createTestAccess } from "./sign-in.js";
 
 let dir: string;
@@ -61,6 +61,7 @@ function build(root = webRoot) {
     publicUrl: config.publicUrl,
     logger,
     github,
+    installations: unusedInstallations,
     access: createTestAccess({
       db: database.db,
       github,

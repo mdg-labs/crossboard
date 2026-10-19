@@ -30,14 +30,29 @@ export function errorResponse(
   return c.json(body, status);
 }
 
-/** The `400` for a filter that does not parse, with the range to underline (SPEC FR-18). */
-export function invalidQueryResponse(c: Context, error: QueryError) {
-  const body: ApiErrorBody & { error: { start: number; end: number } } = {
+/**
+ * The `400` for a filter that does not parse, with the range to underline
+ * (SPEC FR-18). `where` names the filter when a request carries several (a
+ * board's base filter or one of its columns), and `field` is its path in the
+ * request body.
+ */
+export function invalidQueryResponse(
+  c: Context,
+  error: QueryError,
+  where?: { label: string; field: string },
+) {
+  const body: ApiErrorBody & {
+    error: { start: number; end: number; field?: string };
+  } = {
     error: {
       code: "invalid_query",
-      message: error.message,
+      message:
+        where === undefined
+          ? error.message
+          : `${where.label}: ${error.message}`,
       start: error.start,
       end: error.end,
+      ...(where === undefined ? {} : { field: where.field }),
     },
   };
   return c.json(body, 400);

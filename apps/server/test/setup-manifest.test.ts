@@ -30,7 +30,12 @@ import { createLogger } from "../src/logger.js";
 import { decrypt, encrypt } from "../src/security/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { createFakeGithub, FAKE_API_URL, FAKE_WEB_URL } from "./github-fake.js";
-import { githubEnv, SENTINEL, validEnv } from "./helpers.js";
+import {
+  githubEnv,
+  SENTINEL,
+  validEnv,
+  unusedInstallations,
+} from "./helpers.js";
 import { signIn as startSession, createTestAccess } from "./sign-in.js";
 
 const ORIGIN = validEnv.CROSSBOARD_PUBLIC_URL;
@@ -99,6 +104,7 @@ function build(env: Record<string, string> = {}) {
     logger,
     db: database.db,
     github,
+    installations: unusedInstallations,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,

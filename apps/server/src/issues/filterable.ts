@@ -4,7 +4,7 @@ import {
   type FilterableIssue,
   type IssueRelation,
 } from "@crossboard/query";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { inUserAccess } from "../access/index.js";
 import type { IssueItem } from "../api/schemas.js";
 import { schema, type Db } from "../db/index.js";
@@ -23,6 +23,13 @@ const {
 export interface AccessibleIssue {
   item: IssueItem;
   filterable: FilterableIssue;
+}
+
+/** One issue by its place on GitHub; owner and repo match case-insensitively. */
+export interface IssueLocator {
+  owner: string;
+  repo: string;
+  number: number;
 }
 
 const GHOST = "ghost";
@@ -63,11 +70,34 @@ function append<T>(map: Map<string, T[]>, key: string, value: T): void {
  * A parent or a dependency in a repo outside the user's access is never named:
  * the parent is dropped and the relation counts as not accessible for this
  * user, so another user's private repo cannot show through an edge (SPEC §9.1).
+ *
+ * With `only`, loads just that issue, and nothing when it is not synced or
+ * not in the user's access.
  */
 export function loadAccessibleIssues(
   db: Db,
   userId: number,
+  only?: IssueLocator,
 ): AccessibleIssue[] {
+  let scope = inUserAccess(db, userId, issues.repoId);
+  if (only !== undefined) {
+    const target = db
+      .select({ id: issues.id })
+      .from(issues)
+      .innerJoin(repos, eq(issues.repoId, repos.id))
+      .where(
+        and(
+          scope,
+          sql`lower(${repos.owner}) = ${only.owner.toLowerCase()}`,
+          sql`lower(${repos.name}) = ${only.repo.toLowerCase()}`,
+          eq(issues.number, only.number),
+        ),
+      )
+      .get();
+    if (target === undefined) return [];
+    scope = and(scope, eq(issues.id, target.id)) ?? scope;
+  }
+
   const rows = db
     .select({
       id: issues.id,
@@ -93,7 +123,7 @@ export function loadAccessibleIssues(
     .from(issues)
     .innerJoin(repos, eq(issues.repoId, repos.id))
     .leftJoin(issueRefs, eq(issues.parentId, issueRefs.id))
-    .where(inUserAccess(db, userId, issues.repoId))
+    .where(scope)
     .all();
 
   const accessibleRepos = new Set(
@@ -115,7 +145,7 @@ export function loadAccessibleIssues(
     .from(issueLabels)
     .innerJoin(issues, eq(issueLabels.issueId, issues.id))
     .innerJoin(labels, eq(issueLabels.labelId, labels.id))
-    .where(inUserAccess(db, userId, issues.repoId))
+    .where(scope)
     .orderBy(asc(labels.name))
     .all()) {
     append(labelsOf, row.issueId, { name: row.name, color: row.color });
@@ -130,7 +160,7 @@ export function loadAccessibleIssues(
     })
     .from(issueAssignees)
     .innerJoin(issues, eq(issueAssignees.issueId, issues.id))
-    .where(inUserAccess(db, userId, issues.repoId))
+    .where(scope)
     .orderBy(asc(issueAssignees.login))
     .all()) {
     append(assigneesOf, row.issueId, {
@@ -163,7 +193,7 @@ export function loadAccessibleIssues(
     .from(issueDeps)
     .innerJoin(issues, eq(issueDeps.blockedId, issues.id))
     .innerJoin(issueRefs, eq(issueDeps.blockingId, issueRefs.id))
-    .where(inUserAccess(db, userId, issues.repoId))
+    .where(scope)
     .orderBy(asc(issueRefs.repoFullName), asc(issueRefs.number))
     .all()) {
     const found = relation(row);
@@ -179,7 +209,7 @@ export function loadAccessibleIssues(
     .from(issueDeps)
     .innerJoin(issues, eq(issueDeps.blockingId, issues.id))
     .innerJoin(issueRefs, eq(issueDeps.blockedId, issueRefs.id))
-    .where(inUserAccess(db, userId, issues.repoId))
+    .where(scope)
     .orderBy(asc(issueRefs.repoFullName), asc(issueRefs.number))
     .all()) {
     const found = relation(row);

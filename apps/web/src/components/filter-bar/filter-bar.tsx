@@ -1,6 +1,6 @@
 import { parse } from "@crossboard/query";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useLocation, useNavigate, useSearch } from "@tanstack/react-router";
 import {
   useEffect,
   useId,
@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 import { parseIndexSearch } from "@/lib/issues";
+import { boardPathId } from "@/lib/board-cards";
 import { suggestQuery } from "@/lib/suggest";
 
 /**
@@ -47,6 +48,9 @@ export function FilterBar(): React.ReactElement {
   const search = parseIndexSearch(useSearch({ strict: false }));
   const q = search.q ?? "";
   const navigate = useNavigate();
+  const boardId = boardPathId(
+    useLocation({ select: (location) => location.pathname }),
+  );
   const queryClient = useQueryClient();
   const formRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -143,6 +147,21 @@ export function FilterBar(): React.ReactElement {
           return;
         }
         const next = draft.trim();
+        if (boardId !== null) {
+          // On a board the filter narrows that board (SPEC FR-34); a sort
+          // belongs to the list only.
+          void navigate({
+            to: "/b/$boardId",
+            params: { boardId: String(boardId) },
+            search: next === "" ? {} : { q: next },
+          });
+          if (next === q) {
+            void queryClient.invalidateQueries({
+              queryKey: ["boards", boardId, "cards"],
+            });
+          }
+          return;
+        }
         void navigate({
           to: "/",
           search: {

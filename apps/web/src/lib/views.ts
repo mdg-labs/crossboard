@@ -23,7 +23,8 @@ export class ApiError extends Error {
   }
 }
 
-async function failure(response: Response): Promise<ApiError> {
+/** The error a failed API response carries, else one naming its status. */
+export async function failure(response: Response): Promise<ApiError> {
   try {
     const body: unknown = await response.json();
     if (

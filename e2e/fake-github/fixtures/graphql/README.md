@@ -11,3 +11,8 @@ Two other shapes answer an operation by its variables:
 - `{ "nodesBy": "ids", "rateLimit": { … }, "nodes": { "<node id>": { … } } }`
   answers a `nodes(ids: …)` lookup with the node of each requested id, or
   `null` for an id that has none, as GitHub does for a node it cannot read.
+
+`IssueDetails.json` answers by the `id` variable (the issue's node id) with
+the lazily fetched body, comments and sub-issues of the three issues the
+detail specs open. `I_e2e_rk_1` carries a `<script>` and an `onclick`
+attribute in its body so a spec can show the server strips them.

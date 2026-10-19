@@ -7,8 +7,12 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
+import { parseBoardSearch } from "@/lib/board-cards";
 import { parseIndexSearch } from "@/lib/issues";
+import { BoardRoute } from "@/routes/board";
+import { BoardEditRoute, BoardNewRoute } from "@/routes/board-edit";
 import { IndexRoute } from "@/routes/index";
+import { IssueRoute } from "@/routes/issue";
 import { NotAllowedRoute } from "@/routes/not-allowed";
 import { SettingsRoute } from "@/routes/settings";
 import { SetupRoute } from "@/routes/setup";
@@ -45,6 +49,31 @@ const indexRoute = createRoute({
   component: IndexRoute,
 });
 
+const issueRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/i/$owner/$repo/$number",
+  component: IssueRoute,
+});
+
+const boardNewRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/b/new",
+  component: BoardNewRoute,
+});
+
+const boardRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/b/$boardId",
+  validateSearch: parseBoardSearch,
+  component: BoardRoute,
+});
+
+const boardEditRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/b/$boardId/edit",
+  component: BoardEditRoute,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings",
@@ -64,7 +93,14 @@ const notAllowedRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([indexRoute, settingsRoute]),
+  shellRoute.addChildren([
+    indexRoute,
+    issueRoute,
+    boardNewRoute,
+    boardRoute,
+    boardEditRoute,
+    settingsRoute,
+  ]),
   setupRoute,
   notAllowedRoute,
 ]);
