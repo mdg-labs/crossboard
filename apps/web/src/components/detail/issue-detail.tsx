@@ -1,22 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLinkIcon } from "lucide-react";
 import {
   ExternalLink,
   githubOrigin,
   issueUrl,
-  labelUrl,
-  repoUrl,
-  userUrl,
 } from "@/components/detail/issue-link";
 import { DependencyGraph } from "@/components/detail/dependency-graph/dependency-graph";
 import { hasDependencies } from "@/components/detail/dependency-graph/layout";
 import { MarkdownBody } from "@/components/detail/markdown-body";
+import { Person } from "@/components/detail/person";
+import { PropertiesRail } from "@/components/detail/properties-rail";
 import { RelationList } from "@/components/detail/relation-list";
 import { Section } from "@/components/detail/section";
-import { issueTypeColors, labelColors } from "@/components/issue-list/colors";
 import { RelativeTime } from "@/components/issue-list/relative-time";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -88,54 +84,13 @@ function SummarySkeleton(): React.ReactElement {
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}): React.ReactElement {
-  return (
-    <>
-      <dt className="text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 flex-wrap items-center gap-1.5">
-        {children}
-      </dd>
-    </>
-  );
-}
-
-function Person({
-  login,
-  avatarUrl,
-  origin,
-}: {
-  login: string;
-  avatarUrl: string | null;
-  origin: string;
-}): React.ReactElement {
-  return (
-    <ExternalLink
-      className="inline-flex items-center gap-1.5 hover:underline"
-      href={userUrl(origin, login)}
-    >
-      <Avatar className="size-5">
-        {avatarUrl === null ? null : <AvatarImage alt="" src={avatarUrl} />}
-        <AvatarFallback>{login.slice(0, 1).toUpperCase()}</AvatarFallback>
-      </Avatar>
-      {login}
-    </ExternalLink>
-  );
-}
-
-function Summary({
+function IssueHeading({
   summary,
-  onOpenIssue,
+  className,
 }: {
   summary: IssueSummary;
-  onOpenIssue: (issue: IssueRef) => void;
+  className?: string;
 }): React.ReactElement {
-  const origin = githubOrigin(summary.url);
   const ref: IssueRef = {
     owner: summary.repo.owner,
     repo: summary.repo.name,
@@ -143,117 +98,30 @@ function Summary({
   };
 
   return (
+    <header className={cn("flex flex-col gap-2 pb-4", className)}>
+      <p className="flex items-center gap-2 text-sm">
+        <Badge variant="success">Open</Badge>
+        <ExternalLink
+          className="text-muted-foreground tabular-nums hover:underline"
+          href={summary.url}
+        >
+          {refLabel(ref)}
+        </ExternalLink>
+      </p>
+      <h2 className="font-semibold text-xl leading-snug">{summary.title}</h2>
+    </header>
+  );
+}
+
+function Relations({
+  summary,
+  onOpenIssue,
+}: {
+  summary: IssueSummary;
+  onOpenIssue: (issue: IssueRef) => void;
+}): React.ReactElement {
+  return (
     <>
-      <header className="flex flex-col gap-2 pb-4">
-        <div className="flex items-center justify-between gap-2">
-          <p className="flex items-center gap-2 text-sm">
-            <Badge variant="success">Open</Badge>
-            <ExternalLink
-              className="text-muted-foreground tabular-nums hover:underline"
-              href={summary.url}
-            >
-              {refLabel(ref)}
-            </ExternalLink>
-          </p>
-          <Button
-            render={
-              <a href={summary.url} rel="noopener noreferrer" target="_blank" />
-            }
-            size="sm"
-            variant="outline"
-          >
-            Open on GitHub
-            <ExternalLinkIcon aria-hidden="true" />
-          </Button>
-        </div>
-        <h2 className="font-semibold text-xl leading-snug">{summary.title}</h2>
-      </header>
-      <dl className="grid grid-cols-[6rem_1fr] items-center gap-x-3 gap-y-2 pb-4 text-sm">
-        <Field label="Repository">
-          <ExternalLink
-            className="hover:underline"
-            href={repoUrl(origin, ref.owner, ref.repo)}
-          >
-            {ref.owner}/{ref.repo}
-          </ExternalLink>
-        </Field>
-        <Field label="Author">
-          <Person avatarUrl={null} login={summary.author} origin={origin} />
-        </Field>
-        <Field label="Created">
-          <RelativeTime timestamp={summary.createdAt} />
-        </Field>
-        <Field label="Updated">
-          <RelativeTime timestamp={summary.updatedAt} />
-        </Field>
-        {summary.type === null ? null : (
-          <Field label="Type">
-            <Badge style={issueTypeColors(summary.type.color)}>
-              {summary.type.name}
-            </Badge>
-          </Field>
-        )}
-        {summary.milestone === null ? null : (
-          <Field label="Milestone">
-            <ExternalLink
-              className="hover:underline"
-              href={summary.milestone.url}
-            >
-              {summary.milestone.title}
-            </ExternalLink>
-          </Field>
-        )}
-        {summary.labels.length === 0 ? null : (
-          <Field label="Labels">
-            {summary.labels.map((label) => (
-              <Badge
-                key={label.name}
-                render={
-                  <a
-                    href={labelUrl(origin, ref, label.name)}
-                    rel="noopener noreferrer"
-                    target="_blank"
-                  />
-                }
-                style={labelColors(label.color)}
-              >
-                {label.name}
-              </Badge>
-            ))}
-          </Field>
-        )}
-        {summary.assignees.length === 0 ? null : (
-          <Field label="Assignees">
-            {summary.assignees.map((assignee) => (
-              <Person
-                avatarUrl={assignee.avatarUrl}
-                key={assignee.login}
-                login={assignee.login}
-                origin={origin}
-              />
-            ))}
-          </Field>
-        )}
-        {summary.parent === null ? null : (
-          <Field label="Parent">
-            <ExternalLink
-              className={cn(
-                "hover:underline",
-                summary.parent.state === "CLOSED" &&
-                  "text-muted-foreground line-through",
-              )}
-              href={issueUrl(origin, {
-                owner: summary.parent.owner,
-                repo: summary.parent.repo,
-                number: summary.parent.number,
-              })}
-            >
-              {summary.parent.owner}/{summary.parent.repo}#
-              {summary.parent.number} {summary.parent.title}
-            </ExternalLink>
-          </Field>
-        )}
-      </dl>
       <Section
         count={summary.blockedBy.open + summary.blockedBy.notAccessible}
         title="Blocked by"
@@ -397,10 +265,13 @@ function Comments({
 export function IssueDetail({
   issue,
   onOpenIssue,
+  wide = false,
 }: {
   issue: IssueRef;
   /** Opens a synced issue's detail, where the host decides what that means. */
   onOpenIssue: (issue: IssueRef) => void;
+  /** Full-width layout: the fields move into a rail beside the content (from `lg` up). */
+  wide?: boolean;
 }): React.ReactElement {
   const summary = useQuery(issueSummaryQuery(issue));
   const details = useQuery(issueDetailsQuery(issue));
@@ -487,15 +358,35 @@ export function IssueDetail({
   }
 
   return (
-    <div className="flex flex-col">
-      <Summary onOpenIssue={onOpenIssue} summary={data} />
-      {subIssues}
-      <Section title="Description">{body}</Section>
-      {details.data !== undefined && details.data.commentsTotal > 0 ? (
-        <Section count={details.data.commentsTotal} title="Comments">
-          <Comments details={details.data} summary={data} />
-        </Section>
-      ) : null}
+    <div
+      className={cn(
+        "flex flex-col",
+        wide &&
+          "lg:grid lg:grid-cols-[minmax(0,1fr)_18rem] lg:grid-rows-[auto_1fr] lg:gap-x-8",
+      )}
+    >
+      <IssueHeading
+        className={wide ? "lg:col-start-1 lg:row-start-1" : undefined}
+        summary={data}
+      />
+      <PropertiesRail
+        className={cn(
+          "pb-4",
+          wide &&
+            "lg:sticky lg:top-0 lg:col-start-2 lg:row-span-2 lg:row-start-1 lg:self-start lg:border-s lg:pb-0 lg:ps-6",
+        )}
+        summary={data}
+      />
+      <div className={cn("min-w-0", wide && "lg:col-start-1 lg:row-start-2")}>
+        <Relations onOpenIssue={onOpenIssue} summary={data} />
+        {subIssues}
+        <Section title="Description">{body}</Section>
+        {details.data !== undefined && details.data.commentsTotal > 0 ? (
+          <Section count={details.data.commentsTotal} title="Comments">
+            <Comments details={details.data} summary={data} />
+          </Section>
+        ) : null}
+      </div>
     </div>
   );
 }

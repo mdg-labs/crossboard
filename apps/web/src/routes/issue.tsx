@@ -1,5 +1,6 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowLeftIcon } from "lucide-react";
+import { PageDetailHeader } from "@/components/detail/detail-header";
 import { IssueDetail } from "@/components/detail/issue-detail";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { buttonVariants } from "@/components/ui/button";
@@ -19,7 +20,7 @@ export function IssueRoute(): React.ReactElement {
       : null;
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
+    <div className="flex flex-col gap-4 p-6">
       <Link
         className={buttonVariants({
           className: "self-start",
@@ -39,19 +40,23 @@ export function IssueRoute(): React.ReactElement {
           </AlertDescription>
         </Alert>
       ) : (
-        <IssueDetail
-          issue={issue}
-          onOpenIssue={(next) =>
-            void navigate({
-              to: "/i/$owner/$repo/$number",
-              params: {
-                owner: next.owner,
-                repo: next.repo,
-                number: String(next.number),
-              },
-            })
-          }
-        />
+        <>
+          <PageDetailHeader issue={issue} />
+          <IssueDetail
+            issue={issue}
+            wide
+            onOpenIssue={(next) =>
+              void navigate({
+                to: "/i/$owner/$repo/$number",
+                params: {
+                  owner: next.owner,
+                  repo: next.repo,
+                  number: String(next.number),
+                },
+              })
+            }
+          />
+        </>
       )}
     </div>
   );

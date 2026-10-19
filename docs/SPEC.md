@@ -144,7 +144,7 @@ A GitHub-compatible subset, parsed and evaluated **locally** against the cache (
 - **FR-38** Routes: `/b/:boardId` (board), `/b/:boardId/edit`, `/b/new`.
 
 ### 4.6 Detail view
-- **FR-39** Opens as a right side panel over the list and boards, and as its own route `/i/:owner/:repo/:number`. Only synced (open, accessible) issues have a detail view; links to anything else go to GitHub.
+- **FR-39** Opens as a right side panel over the list and boards, and as its own route `/i/:owner/:repo/:number`. Only synced (open, accessible) issues have a detail view; links to anything else go to GitHub. The panel has one fixed header row that stays visible while the body scrolls: the issue ref (the panel's accessible name), a "Sub-issue of `owner/repo#N`" link when the issue has a parent, "Open on GitHub", a full-screen toggle and the close button. The toggle widens the panel in place to the viewport and moves the fields (repository, author, created/updated, type, milestone, labels, assignees) into a properties rail beside the content; the choice is remembered per browser (D-25). The route uses the same two-column layout at full width, with the same header row minus the toggle and close button.
 - **FR-40** Shows: title, state, `owner/repo#number`, author, created/updated, type, milestone, labels, assignees, parent issue, sub-issues (each with state), blocked by, blocking, dependency graph (FR-27), rendered body, and comments (author, time, rendered body).
 - **FR-41** Body and comment HTML come from GitHub's rendered HTML (`bodyHTML`), **sanitized** on the server (§9.3) before storage and delivery. The web app renders it inside a `markdown-body` container styled with `github-markdown-css` (light and dark).
 - **FR-42** Body, comments and the sub-issue list are fetched **lazily** when the detail opens and cached in `issue_details`. The cache is valid while the issue's `updated_at` matches **and** the copy is younger than 10 minutes (private-repo image URLs in GitHub's HTML expire after a few minutes). A stale or missing copy is refetched on open: the details route waits for the fetch, while the panel shows the summary immediately and the body when it arrives. Concurrent requests for the same issue share one fetch. If the fetch fails, the route returns the stale copy with `stale: true` when one exists; otherwise `503` (budget below 2% or installation suspended, with the reset time when known) or `502` (GitHub error), and the panel shows the error with a retry button.
@@ -471,6 +471,8 @@ Every UI element uses the coss ui component named here, from `apps/web/src/compo
 | Empty states (FR-16, every view) | Empty |
 | Error states with retry, "not allowed" page (FR-2) | Alert, Button, Empty |
 | Detail side panel (FR-39) | Drawer, non-modal: the list or board behind it stays usable (D-22) |
+| Detail header row (FR-39) | Drawer header and title, Button (ghost, icon), Tooltip, Separator, Toggle (full screen) |
+| Detail properties rail (FR-39, FR-40) | an `aside` holding a definition list of Badge and Avatar |
 | Detail sections: sub-issues, relations, comments (FR-40, FR-43) | Collapsible, Separator, Avatar |
 | Board columns and cards (FR-32) | Card, Scroll Area |
 | Board repo picker (FR-34) | Combobox |
@@ -537,6 +539,7 @@ M4 depends only on M1 and can run in parallel with M2 and M3.
 - **D-22 Detail panel and filter error:** the detail Drawer is non-modal, so `j`/`k`, `/` and clicks keep working on the list or board behind it; if coss's Drawer cannot be non-modal, that is a §14 question, not a hand-built panel. The filter's error range (FR-18) is underlined by a text layer mirrored behind the Input Group, the third hand-built UI element. (2026-10-18)
 - **D-23 Nightly image:** every push to `main` runs `.github/workflows/nightly.yml`, which runs `pnpm gate` and then builds the image for `linux/amd64` only and pushes `ghcr.io/mdg-labs/crossboard:<short sha>` (the first 7 characters of the commit SHA) and the moving `:nightly`. D-16 stays the only source of `:<version>` and `:latest`. (2026-10-19)
 - **D-24 GitHub-hosted runners only:** every workflow (`ci.yml`, `nightly.yml`, `release.yml`, `issue-status.yml`) runs on GitHub-hosted runners, and pull-request code, forks included, never runs on a self-hosted runner. Fork pull-request CI therefore runs on a throwaway VM that shares no Docker daemon, image cache or workspace with the job that publishes the nightly image. The CI job `gate` runs on every `pull_request` with no fork exclusion, so a ruleset on `main` can require it. (2026-10-19)
+- **D-25 Full screen is in place:** the detail panel's full-screen mode widens the Drawer over the list or board instead of navigating to `/i/:owner/:repo/:number`, so the list or board keeps its scroll position, filter and selection, and `j`/`k` keep working behind the panel (D-22). The choice is stored in `localStorage` under `crossboard:detail:expanded`; where storage is unavailable the panel starts as a side panel. (2026-10-20)
 
 ## 14. Open questions
 New questions are added here with a recommended default and resolved into §13.

@@ -39,12 +39,13 @@ function stubServer(stub: Stub) {
   return mock;
 }
 
-function renderDetail(onOpenIssue = vi.fn()) {
+function renderDetail(onOpenIssue = vi.fn(), wide = false) {
   render(
     <QueryClientProvider client={createQueryClient()}>
       <IssueDetail
         issue={{ owner: "acme", repo: "widgets", number: 1 }}
         onOpenIssue={onOpenIssue}
+        wide={wide}
       />
     </QueryClientProvider>,
   );
@@ -104,13 +105,83 @@ describe("the issue detail", () => {
     expect(screen.getByText("hubot").closest("a")?.getAttribute("href")).toBe(
       "https://github.com/hubot",
     );
-    expect(screen.getByText(/acme\/widgets#9 Epic/)).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: "Open on GitHub" }).getAttribute("href"),
-    ).toBe("https://github.com/acme/widgets/issues/1");
     expect(screen.getByText("Loading description")).toBeTruthy();
     expect(screen.getByText("Created")).toBeTruthy();
     expect(screen.getByText("Updated")).toBeTruthy();
+  });
+
+  describe("the layout", () => {
+    const stub = () =>
+      stubServer({
+        summary: () =>
+          Response.json(
+            summary({ labels: [{ name: "bug", color: "d73a4a" }] }),
+          ),
+        details: () => Response.json(details()),
+      });
+
+    it("lists the fields in the Properties aside, above the sections", async () => {
+      stub();
+      renderDetail();
+
+      const aside = await screen.findByRole("complementary", {
+        name: "Properties",
+      });
+      for (const label of ["Repository", "Author", "Created", "Labels"]) {
+        expect(within(aside).getByText(label)).toBeTruthy();
+      }
+      expect(aside.className).not.toContain("lg:col-start-2");
+    });
+
+    it("puts the Properties aside beside the content in a wide layout", async () => {
+      stub();
+      renderDetail(vi.fn(), true);
+
+      const aside = await screen.findByRole("complementary", {
+        name: "Properties",
+      });
+      expect(aside.className).toContain("lg:col-start-2");
+      expect(aside.className).toContain("lg:border-s");
+      expect(within(aside).getByText("Repository")).toBeTruthy();
+      const grid = aside.parentElement as HTMLElement;
+      expect(grid.className).toContain("lg:grid-cols-");
+      expect(
+        within(grid).getByRole("heading", { name: "Widget fails to render" }),
+      ).toBeTruthy();
+      expect(await screen.findByText("fails")).toBeTruthy();
+    });
+
+    it("shows the skeleton and the not-found state in a wide layout", async () => {
+      stubServer({
+        summary: () => new Promise<Response>(() => undefined),
+        details: () => new Promise<Response>(() => undefined),
+      });
+      renderDetail(vi.fn(), true);
+      expect(
+        screen.getByRole("status", { name: "Loading issue" }),
+      ).toBeTruthy();
+      cleanup();
+
+      stubServer({
+        summary: () => Response.json(errorBody("Not found"), { status: 404 }),
+        details: () => Response.json(errorBody("Not found"), { status: 404 }),
+      });
+      renderDetail(vi.fn(), true);
+      expect((await screen.findByRole("alert")).textContent).toContain(
+        "No detail for acme/widgets#1",
+      );
+    });
+
+    it("shows the retry in a wide layout when the summary fails", async () => {
+      stubServer({
+        summary: () => Response.json(errorBody("boom"), { status: 500 }),
+        details: () => Response.json(details()),
+      });
+      renderDetail(vi.fn(), true);
+
+      const alert = await screen.findByRole("alert");
+      expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
+    });
   });
 
   it("renders the body in a markdown-body container when it arrives", async () => {
