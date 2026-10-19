@@ -231,6 +231,130 @@ describe("the issue detail", () => {
     ).not.toBeNull();
   });
 
+  describe("the comment cards", () => {
+    const comment = (n: number, author: string) => ({
+      url: `https://github.com/acme/widgets/issues/1#issuecomment-${n}`,
+      createdAt: Date.now() - (10 - n) * 3_600_000,
+      author,
+      avatarUrl: null,
+      bodyHtml: `<p>Comment ${n}</p>`,
+    });
+    const stubComments = () =>
+      stubServer({
+        summary: () => Response.json(summary({ author: "octocat" })),
+        details: () =>
+          Response.json(
+            details({
+              comments: [
+                comment(1, "hubot"),
+                comment(2, "octocat"),
+                comment(3, "ghost"),
+              ],
+              commentsTotal: 3,
+            }),
+          ),
+      });
+    const cards = (list: HTMLElement) => [
+      ...list.querySelectorAll<HTMLElement>("[data-slot=card]"),
+    ];
+
+    it("renders one card per comment, with the avatar, author and time in its header", async () => {
+      stubComments();
+      renderDetail();
+
+      const list = await screen.findByRole("list", { name: "Comments" });
+      const [first, second, third] = cards(list);
+      expect(cards(list)).toHaveLength(3);
+      expect(first?.tagName).toBe("LI");
+      for (const [card, author, n] of [
+        [first, "hubot", 1],
+        [second, "octocat", 2],
+        [third, "ghost", 3],
+      ] as const) {
+        const header = card?.querySelector(
+          "[data-slot=card-header]",
+        ) as HTMLElement;
+        expect(
+          within(header)
+            .getByRole("link", { name: new RegExp(`${author}$`) })
+            .getAttribute("href"),
+        ).toBe(`https://github.com/${author}`);
+        expect(header.querySelector("[data-slot=avatar]")).not.toBeNull();
+        expect(
+          header.querySelector("time")?.closest("a")?.getAttribute("href"),
+        ).toBe(
+          `https://github.com/acme/widgets/issues/1#issuecomment-${String(n)}`,
+        );
+        expect(
+          card?.querySelector("[data-slot=card-panel] .markdown-body")
+            ?.textContent,
+        ).toBe(`Comment ${String(n)}`);
+      }
+    });
+
+    it("badges the comments of the issue's author and no others", async () => {
+      stubComments();
+      renderDetail();
+
+      const list = await screen.findByRole("list", { name: "Comments" });
+      const badged = cards(list).map((card) =>
+        within(card).queryByText("Author") === null ? "no" : "yes",
+      );
+      expect(badged).toEqual(["no", "yes", "no"]);
+    });
+
+    it("keeps the link to earlier comments above the first card", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () =>
+          Response.json(
+            details({ comments: [comment(1, "hubot")], commentsTotal: 5 }),
+          ),
+      });
+      renderDetail();
+
+      const list = await screen.findByRole("list", { name: "Comments" });
+      const items = within(list).getAllByRole("listitem");
+      expect(items[0]?.getAttribute("data-slot")).toBeNull();
+      expect(items[0]?.textContent).toContain("4 earlier comments on GitHub");
+      expect(items[1]?.getAttribute("data-slot")).toBe("card");
+    });
+  });
+
+  describe("the description card", () => {
+    it("frames the description like a comment, headed by who opened the issue", async () => {
+      stubServer({
+        summary: () => Response.json(summary({ author: "octocat" })),
+        details: () => Response.json(details()),
+      });
+      renderDetail();
+
+      const body = await screen.findByText("fails");
+      const card = body.closest("[data-slot=card]") as HTMLElement;
+      const header = card.querySelector(
+        "[data-slot=card-header]",
+      ) as HTMLElement;
+      expect(header.textContent).toContain("octocat");
+      expect(header.textContent).toContain("opened this issue");
+      expect(within(header).queryByText("Author")).toBeNull();
+      expect(body.closest(".markdown-body")).not.toBeNull();
+      expect(
+        header.querySelector("time")?.closest("a")?.getAttribute("href"),
+      ).toBe("https://github.com/acme/widgets/issues/1");
+    });
+
+    it("says so inside the card when there is no description", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () => Response.json(details({ bodyHtml: "" })),
+      });
+      renderDetail();
+
+      const empty = await screen.findByText("No description provided.");
+      expect(empty.closest("[data-slot=card]")).not.toBeNull();
+    });
+  });
+
   it("lists sub-issues with state and what lies beyond the first 50", async () => {
     stubServer({
       summary: () =>

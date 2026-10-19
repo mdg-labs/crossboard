@@ -4,14 +4,13 @@ import {
   githubOrigin,
   issueUrl,
 } from "@/components/detail/issue-link";
+import { CommentCard } from "@/components/detail/comment-card";
 import { DependencyGraph } from "@/components/detail/dependency-graph/dependency-graph";
 import { hasDependencies } from "@/components/detail/dependency-graph/layout";
 import { MarkdownBody } from "@/components/detail/markdown-body";
-import { Person } from "@/components/detail/person";
 import { PropertiesRail } from "@/components/detail/properties-rail";
 import { RelationList } from "@/components/detail/relation-list";
 import { Section } from "@/components/detail/section";
-import { RelativeTime } from "@/components/issue-list/relative-time";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -222,7 +221,7 @@ function Comments({
   const earlier = details.commentsTotal - details.comments.length;
 
   return (
-    <ol aria-label="Comments" className="flex flex-col gap-4">
+    <ol aria-label="Comments" className="flex flex-col gap-3">
       {earlier > 0 ? (
         <li className="text-sm">
           <ExternalLink
@@ -234,22 +233,18 @@ function Comments({
         </li>
       ) : null}
       {details.comments.map((comment) => (
-        <li className="flex flex-col gap-2" key={comment.url}>
-          <div className="flex items-center gap-2 text-sm">
-            <Person
-              avatarUrl={comment.avatarUrl}
-              login={comment.author}
-              origin={origin}
-            />
-            <ExternalLink
-              className="text-muted-foreground hover:underline"
-              href={comment.url}
-            >
-              <RelativeTime timestamp={comment.createdAt} />
-            </ExternalLink>
-          </div>
+        <CommentCard
+          author={comment.author}
+          avatarUrl={comment.avatarUrl}
+          isIssueAuthor={comment.author === summary.author}
+          key={comment.url}
+          origin={origin}
+          render={<li />}
+          timestamp={comment.createdAt}
+          url={comment.url}
+        >
           <MarkdownBody html={comment.bodyHtml} />
-        </li>
+        </CommentCard>
       ))}
     </ol>
   );
@@ -328,13 +323,23 @@ export function IssueDetail({
             </AlertDescription>
           </Alert>
         ) : null}
-        {details.data.bodyHtml === "" ? (
-          <p className="text-muted-foreground text-sm">
-            No description provided.
-          </p>
-        ) : (
-          <MarkdownBody html={details.data.bodyHtml} />
-        )}
+        <CommentCard
+          author={data.author}
+          avatarUrl={null}
+          headline="opened this issue"
+          isIssueAuthor={false}
+          origin={githubOrigin(data.url)}
+          timestamp={data.createdAt}
+          url={data.url}
+        >
+          {details.data.bodyHtml === "" ? (
+            <p className="text-muted-foreground text-sm">
+              No description provided.
+            </p>
+          ) : (
+            <MarkdownBody html={details.data.bodyHtml} />
+          )}
+        </CommentCard>
       </>
     );
   } else if (details.isPending) {
