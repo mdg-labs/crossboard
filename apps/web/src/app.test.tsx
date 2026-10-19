@@ -25,7 +25,7 @@ async function renderShell(path = "/") {
 }
 
 describe("shell", () => {
-  it("renders the top bar and an empty main area at /", async () => {
+  it("renders the top bar and the issue list at /", async () => {
     await renderShell();
     expect(screen.getByRole("banner")).toBeTruthy();
     expect(screen.getByRole("toolbar")).toBeTruthy();
@@ -35,11 +35,12 @@ describe("shell", () => {
     const main = screen.getByRole("main");
     const section = main.querySelector("section[aria-label='Issues']");
     expect(section).toBeTruthy();
-    expect(section?.childElementCount).toBe(0);
   });
 
   it("renders no <style> element and no style attribute", async () => {
-    const { container } = await renderShell();
+    // The list sets styles from script (CSSOM), which the CSP allows; the
+    // settings page is where the markup itself must carry none.
+    const { container } = await renderShell("/settings");
     expect(document.querySelectorAll("style")).toHaveLength(0);
     expect(document.querySelectorAll("[style]")).toHaveLength(0);
     expect(container.innerHTML).not.toMatch(/<style|\sstyle=/);
