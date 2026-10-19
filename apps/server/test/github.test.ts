@@ -11,6 +11,7 @@ import { http, HttpResponse } from "msw";
 import {
   createGithubClient,
   GithubError,
+  queries,
   type GithubClient,
 } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
@@ -20,7 +21,11 @@ import {
   createFakeGithub,
   FAKE_API_URL,
   FAKE_WEB_URL,
+  APP_ID,
+  APP_PRIVATE_KEY,
   fakeInstallations,
+  INSTALLATION_ID,
+  issueInstallationToken,
   fakeRepositories,
   USER_TOKEN,
 } from "./github-fake.js";
@@ -38,6 +43,7 @@ beforeEach(() => {
   client = createGithubClient({
     apiUrl: FAKE_API_URL,
     webUrl: FAKE_WEB_URL,
+    sleep: () => Promise.resolve(),
     logger: createLogger("debug", { write: (chunk) => logs.push(chunk) }),
   });
 });
@@ -114,10 +120,12 @@ describe("typed calls", () => {
 });
 
 describe("only the D-18 credential exchanges are non-GET", () => {
-  const CREDENTIAL_EXCHANGES: Record<string, string> = {
+  const NON_GET_CALLS: Record<string, string> = {
     exchangeOAuthCode: "POST",
     refreshOAuthToken: "POST",
     convertManifest: "POST",
+    createInstallationToken: "POST",
+    graphql: "POST",
   };
 
   const invoke: Record<string, (target: GithubClient) => Promise<unknown>> = {
@@ -129,17 +137,42 @@ describe("only the D-18 credential exchanges are non-GET", () => {
     refreshOAuthToken: (target) =>
       target.refreshOAuthToken(app, "good-refresh"),
     convertManifest: (target) => target.convertManifest("good-manifest-code"),
+    createInstallationToken: (target) =>
+      target.createInstallationToken(
+        { appId: APP_ID, privateKey: APP_PRIVATE_KEY },
+        INSTALLATION_ID,
+      ),
+    graphql: (target) =>
+      target.graphql(issueInstallationToken(), queries.openIssuesPage, {
+        owner: "octocat",
+        name: "repo-1",
+      }),
+    restGet: (target) =>
+      target.restGet(
+        issueInstallationToken(),
+        "GET /installation/repositories",
+      ),
+    restGetConditional: (target) =>
+      target.restGetConditional(
+        issueInstallationToken(),
+        "GET /installation/repositories",
+        '"etag"',
+      ),
   };
 
   it("classifies every method the client exposes", () => {
-    expect(Object.keys(invoke).sort()).toEqual(Object.keys(client).sort());
+    expect(Object.keys(invoke).sort()).toEqual(
+      Object.keys(client)
+        .filter((name) => name !== "budgets")
+        .sort(),
+    );
   });
 
   it.each(Object.keys(invoke))(
     "%s sends only the allowed method",
     async (name) => {
       await invoke[name]?.(client);
-      const expected = CREDENTIAL_EXCHANGES[name] ?? "GET";
+      const expected = NON_GET_CALLS[name] ?? "GET";
       expect(fake.requests.length).toBeGreaterThan(0);
       expect(new Set(fake.requests.map((request) => request.method))).toEqual(
         new Set([expected]),

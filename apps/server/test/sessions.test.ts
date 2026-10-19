@@ -31,7 +31,7 @@ import {
 } from "../src/security/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { githubEnv, validEnv } from "./helpers.js";
-import { addUser, signIn } from "./sign-in.js";
+import { addUser, signIn, createTestAccess } from "./sign-in.js";
 
 const ORIGIN = validEnv.CROSSBOARD_PUBLIC_URL;
 const HOUR = SESSION_TOUCH_INTERVAL_MS;
@@ -65,17 +65,25 @@ function build(env: Record<string, string> = { ...validEnv, ...githubEnv }) {
   const logger = createLogger("silent");
   const setup = createSetup({ db: database.db, config, logger });
   setup.start();
+  const github = createGithubClient({
+    apiUrl: "https://api.github.test",
+    webUrl: "https://github.test",
+    logger,
+  });
   return createApp({
     logger,
     db: database.db,
-    github: createGithubClient({
-      apiUrl: "https://api.github.test",
-      webUrl: "https://github.test",
-      logger,
-    }),
+    github,
     version: "1.0.0",
     webRoot,
     setup,
+    access: createTestAccess({
+      db: database.db,
+      github,
+      setup,
+      appSecret: config.appSecret,
+      logger,
+    }),
     appSecret: config.appSecret,
     publicUrl: config.publicUrl,
   });

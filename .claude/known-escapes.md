@@ -18,6 +18,11 @@ existing line by adding its PR number.
 ## Auth and tokens
 
 - **Over-broad error class** — a destructive step (deleting a user's tokens and sessions) taken on any 4xx instead of the one upstream error code that means the credential is dead, so a misconfigured secret or a rate limit signs users out — PR 76
+- **Non-idempotent retry** — a generic transient-failure retry applied to a single-use credential exchange (OAuth code, refresh token, manifest code), so a lost answer replays a consumed credential and the retry fails or signs the user out — PR 84
+
+## GitHub integration
+
+- **Status-only failure detection** — a limit or failure recognised only by HTTP status, while GraphQL reports it in a `200` body (`errors[].type`, e.g. `RATE_LIMITED`), so the documented wait or handling never runs — PR 84
 
 ## CI and packaging
 

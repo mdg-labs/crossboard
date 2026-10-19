@@ -3,7 +3,12 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { createAccess, registerAccessJob } from "./access/index.js";
+import {
+  activeInstallationIds,
+  createAccess,
+  purgeInactiveInstallations,
+  registerAccessJob,
+} from "./access/index.js";
 import { createApp } from "./app.js";
 import {
   enqueueSessionCleanupAtStart,
@@ -13,9 +18,24 @@ import { createSetup } from "./auth/setup/index.js";
 import { createUserTokens } from "./auth/tokens.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
-import { createGithubClient } from "./github/index.js";
+import {
+  createGithubClient,
+  createInstallationClient,
+} from "./github/index.js";
 import { createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
+import {
+  createDiscovery,
+  enqueueDiscovery,
+  registerDiscoveryJob,
+} from "./sync/discovery.js";
+import { createRefetch } from "./sync/refetch.js";
+import {
+  createSync,
+  enqueueSync,
+  enqueueSyncAtStart,
+  registerSyncJob,
+} from "./sync/sync.js";
 import { readServerVersion } from "./version.js";
 import type { Logger } from "pino";
 
@@ -81,6 +101,44 @@ export const github = createGithubClient({
 export const setup = createSetup({ db: database.db, config, logger });
 setup.start();
 
+// What the sync jobs and the routes that read GitHub data fetch through.
+export const installations = createInstallationClient({
+  github,
+  credentials: () => setup.credentials(),
+});
+
+const isActive = (installationId: number) =>
+  activeInstallationIds(database.db, setup.allowlist).has(installationId);
+
+// Refetches issues by node id and removes them by the SPEC §8.2 rules; the
+// sync uses it for the issues a full sync no longer returns.
+export const issues = createRefetch({
+  db: database.db,
+  installations,
+  isActive,
+  logger,
+});
+
+export const sync = createSync({
+  db: database.db,
+  installations,
+  isActive,
+  refetch: (ids) => issues.refetch(ids),
+  logger,
+});
+registerSyncJob(jobs, sync);
+
+export const discovery = createDiscovery({
+  db: database.db,
+  installations,
+  isActive,
+  logger,
+  onPending: (pending) => {
+    for (const repo of pending) enqueueSync(jobs, repo);
+  },
+});
+registerDiscoveryJob(jobs, discovery);
+
 export const access = createAccess({
   db: database.db,
   github,
@@ -93,8 +151,23 @@ export const access = createAccess({
     appSecret: config.appSecret,
     logger,
   }),
+  onActivated: (installationIds) => {
+    for (const id of installationIds) enqueueDiscovery(jobs, id);
+  },
 });
 registerAccessJob(jobs, access, database.db, logger);
+
+// An allowlist change since the last run can leave installations inactive that
+// no access computation saw go; their repos are purged before anything is
+// discovered or synced.
+purgeInactiveInstallations(database.db, setup.allowlist, logger);
+
+// Every active installation is discovered again at startup, then the repos a
+// restart left `pending` or `syncing` are synced.
+for (const id of activeInstallationIds(database.db, setup.allowlist)) {
+  enqueueDiscovery(jobs, id);
+}
+enqueueSyncAtStart(jobs, database.db, setup.allowlist);
 
 const app = createApp({
   logger,
@@ -103,6 +176,7 @@ const app = createApp({
   version: readServerVersion(),
   webRoot,
   setup,
+  access,
   appSecret: config.appSecret,
   publicUrl: config.publicUrl,
 });

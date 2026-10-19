@@ -11,14 +11,17 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
+import type { Access } from "../src/access/index.js";
 import { createApp } from "../src/app.js";
 import { createSetup } from "../src/auth/setup/index.js";
 import { loadConfig } from "../src/config/index.js";
 import { schema } from "../src/db/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
-import { accessHandlers, type World } from "./access.js";
+import { decrypt } from "../src/security/index.js";
+import { accessHandlers, storeTokens, type World } from "./access.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import {
   CLIENT_ID,
@@ -28,6 +31,7 @@ import {
   FAKE_WEB_URL,
 } from "./github-fake.js";
 import { validEnv } from "./helpers.js";
+import { createTestAccess } from "./sign-in.js";
 
 const people = {
   alice: { id: 1, token: "ghu_alice_access" },
@@ -42,6 +46,8 @@ let dir: string;
 let database: TestDatabase;
 let logs: Record<string, unknown>[];
 let worlds: Record<string, World>;
+// What index.ts hands to both the access job and the routes.
+let access: Access;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "crossboard-access-signin-"));
@@ -110,17 +116,27 @@ function build() {
   });
   const setup = createSetup({ db: database.db, config, logger });
   setup.start();
+  const github = createGithubClient({
+    apiUrl: config.githubApiUrl,
+    webUrl: config.githubWebUrl,
+    sleep: () => Promise.resolve(),
+    logger,
+  });
+  access = createTestAccess({
+    db: database.db,
+    github,
+    setup,
+    appSecret: config.appSecret,
+    logger,
+  });
   return createApp({
     logger,
     db: database.db,
-    github: createGithubClient({
-      apiUrl: config.githubApiUrl,
-      webUrl: config.githubWebUrl,
-      logger,
-    }),
+    github,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,
+    access,
     appSecret: config.appSecret,
     publicUrl: config.publicUrl,
   });
@@ -151,6 +167,21 @@ const accessOf = (login: string) => {
     .map((row) => row.repoId)
     .sort();
 };
+
+const APP_SECRET = validEnv.CROSSBOARD_APP_SECRET;
+
+const addUserWithId = (githubId: number, login: string) =>
+  database.db
+    .insert(schema.users)
+    .values({
+      githubId,
+      login,
+      avatarUrl: "https://avatars.githubusercontent.com/u/1",
+      createdAt: 1,
+      lastLoginAt: 1,
+    })
+    .returning()
+    .get();
 
 const repoOf = (id: number, owner: string, name: string) => ({
   id,
@@ -213,5 +244,162 @@ describe("computing access at sign-in", () => {
           entry.msg === "computing the user's access at sign-in failed",
       ),
     ).toBe(true);
+  });
+});
+
+describe("one refresh per user across the access job and the sign-in", () => {
+  it("sends a single refresh when both compute the same user's access at once", async () => {
+    const stored = addUserWithId(people.alice.id, "alice");
+    // Inside the 5-minute refresh margin, with the refresh token only GitHub's
+    // rotation-aware fake accepts once.
+    storeTokens(database.db, APP_SECRET, stored.id, {
+      access: "ghu_alice_stale",
+      refresh: "refresh-before",
+      accessExpiresAt: Date.now() + 60_000,
+    });
+    worlds["ghu_alice_rotated"] = {
+      installations: [{ id: 1, login: "alice" }],
+      repos: { 1: [repoOf(10, "alice", "notes")] },
+    };
+
+    const usable = new Set(["refresh-before"]);
+    const refreshes: string[] = [];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.server.use(
+      http.post(
+        `${FAKE_WEB_URL}/login/oauth/access_token`,
+        async ({ request }) => {
+          const body = (await request.json()) as Record<string, string>;
+          if (body.grant_type !== "refresh_token") {
+            // The sign-in's own code exchange hands out an almost-expired token.
+            return HttpResponse.json({
+              access_token: people.alice.token,
+              expires_in: 60,
+              refresh_token: "refresh-from-sign-in",
+              refresh_token_expires_in: 15811200,
+            });
+          }
+          const token = body.refresh_token ?? "";
+          refreshes.push(token);
+          await gate;
+          if (!usable.delete(token)) {
+            return HttpResponse.json({
+              error: "bad_refresh_token",
+              error_description: "The refresh token passed is incorrect.",
+            });
+          }
+          return HttpResponse.json({
+            access_token: "ghu_alice_rotated",
+            expires_in: 28800,
+            refresh_token: "refresh-after",
+            refresh_token_expires_in: 15811200,
+          });
+        },
+      ),
+    );
+
+    const app = build();
+    const job = access.compute(stored.id);
+    const callback = signInAs(app, "alice");
+    // Wait for the sign-in to replace the stored tokens, then give its own
+    // access computation time to ask for a refresh before GitHub answers.
+    await vi.waitFor(() => {
+      const row = database.db
+        .select()
+        .from(schema.userTokens)
+        .where(eq(schema.userTokens.userId, stored.id))
+        .get();
+      expect(decrypt(row?.refreshTokenEnc ?? "", APP_SECRET)).toBe(
+        "refresh-from-sign-in",
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    release();
+    const [computed, response] = await Promise.all([job, callback]);
+
+    expect(refreshes).toEqual(["refresh-before"]);
+    expect(computed).toBe("computed");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/");
+    expect(database.db.select().from(schema.sessions).all()).toHaveLength(1);
+    const row = database.db
+      .select()
+      .from(schema.userTokens)
+      .where(eq(schema.userTokens.userId, stored.id))
+      .get();
+    // The rotated pair belongs to the replaced refresh token, so the newer
+    // sign-in's row stays.
+    expect(decrypt(row?.refreshTokenEnc ?? "", APP_SECRET)).toBe(
+      "refresh-from-sign-in",
+    );
+    expect(accessOf("alice")).toEqual(["R_10"]);
+  });
+
+  it("keeps the tokens a sign-in wrote while a refresh with older tokens is in flight and then fails", async () => {
+    const stored = addUserWithId(people.alice.id, "alice");
+    storeTokens(database.db, APP_SECRET, stored.id, {
+      access: "ghu_alice_stale",
+      refresh: "refresh-revoked",
+      accessExpiresAt: Date.now() + 60_000,
+    });
+    worlds[people.alice.token] = {
+      installations: [{ id: 1, login: "alice" }],
+      repos: { 1: [repoOf(10, "alice", "notes")] },
+    };
+
+    const refreshes: string[] = [];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.server.use(
+      http.post(
+        `${FAKE_WEB_URL}/login/oauth/access_token`,
+        async ({ request }) => {
+          const body = (await request.json()) as Record<string, string>;
+          if (body.grant_type !== "refresh_token") {
+            return HttpResponse.json({
+              access_token: people.alice.token,
+              expires_in: 28800,
+              refresh_token: "refresh-from-sign-in",
+              refresh_token_expires_in: 15811200,
+            });
+          }
+          refreshes.push(body.refresh_token ?? "");
+          await gate;
+          return HttpResponse.json({
+            error: "bad_refresh_token",
+            error_description: "The refresh token passed is incorrect.",
+          });
+        },
+      ),
+    );
+
+    const app = build();
+    const job = access.compute(stored.id);
+    await vi.waitFor(() => {
+      expect(refreshes).toEqual(["refresh-revoked"]);
+    });
+    const response = await signInAs(app, "alice");
+    expect(response.status).toBe(302);
+    release();
+    await job;
+
+    expect(refreshes).toEqual(["refresh-revoked"]);
+    const row = database.db
+      .select()
+      .from(schema.userTokens)
+      .where(eq(schema.userTokens.userId, stored.id))
+      .get();
+    expect(decrypt(row?.accessTokenEnc ?? "", APP_SECRET)).toBe(
+      people.alice.token,
+    );
+    expect(decrypt(row?.refreshTokenEnc ?? "", APP_SECRET)).toBe(
+      "refresh-from-sign-in",
+    );
+    expect(database.db.select().from(schema.sessions).all()).toHaveLength(1);
   });
 });

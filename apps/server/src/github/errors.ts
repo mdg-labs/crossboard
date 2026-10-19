@@ -13,3 +13,11 @@ export class GithubError extends Error {
     if (code !== undefined) this.code = code;
   }
 }
+
+/** A GraphQL document the client refuses to send; nothing reached GitHub. */
+export class GithubDocumentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GithubDocumentError";
+  }
+}

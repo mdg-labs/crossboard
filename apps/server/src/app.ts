@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Logger } from "pino";
+import type { Access } from "./access/index.js";
 import { createApi } from "./api/index.js";
 import { createErrorHandler, notFound } from "./api/errors.js";
 import {
@@ -30,6 +31,7 @@ export interface AppOptions {
   version: string;
   webRoot: string;
   setup: Setup;
+  access: Access;
   appSecret: string;
   publicUrl: string;
 }
@@ -67,6 +69,7 @@ export function createApp(options: AppOptions) {
         setup: options.setup,
         logger: options.logger,
         appSecret: options.appSecret,
+        access: options.access,
       }),
     )
     .route(

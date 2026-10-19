@@ -9,8 +9,9 @@ export const ACCESS_INTERVAL_MS = 60 * 60 * 1000;
 
 /**
  * Registers the job that recomputes the access of every user with a live
- * session, and schedules it every 60 minutes (SPEC FR-8). One user's failure
- * is logged and does not stop the others.
+ * session, and schedules it every 60 minutes (SPEC FR-8). A user whose token
+ * GitHub rejects with 401 is signed out (SPEC FR-7). One user's failure is
+ * logged and does not stop the others.
  */
 export function registerAccessJob(
   jobs: Jobs,
@@ -27,7 +28,7 @@ export function registerAccessJob(
       .all();
     for (const { userId } of users) {
       try {
-        await access.compute(userId);
+        await access.compute(userId, { revokeRejected: true });
       } catch (error) {
         logger.error({ err: error, userId }, "computing user access failed");
       }
