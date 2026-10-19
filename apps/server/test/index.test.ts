@@ -2,6 +2,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
+import { connect } from "node:net";
+import { setTimeout as realSleep } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
@@ -517,6 +519,58 @@ describe("process entry shutdown", () => {
     release();
     expect(await exited).toBe(0);
     expect(entry.database.sqlite.open).toBe(false);
+    opened.pop();
+  });
+
+  it("closes the database within one grace period of the signal when a connection and a job both hang", async () => {
+    stubEnv(validEnv);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let exitCode: unknown = "pending";
+    exit.mockImplementation((code?: string | number | null) => {
+      exitCode = code;
+      return undefined as never;
+    });
+    const entry = await start();
+    if (!entry.server.listening) {
+      await new Promise((resolve) => entry.server.once("listening", resolve));
+    }
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    entry.jobs.register("slow", async () => {
+      started();
+      await held;
+    });
+    entry.jobs.enqueue("slow", null);
+    await running;
+    // An incomplete request keeps the connection open, so server.close() only
+    // finishes once the entry force-closes it.
+    const client = connect(port, "127.0.0.1");
+    client.on("error", () => undefined);
+    await new Promise((resolve) => client.once("connect", resolve));
+    client.write("GET /api/health HTTP/1.1\r\nHost: localhost\r\n");
+    await realSleep(50);
+
+    // Only setTimeout is faked, so sockets and promises keep running for real.
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      process.emit("SIGTERM", "SIGTERM");
+      // A single grace period after the signal, not one per phase.
+      await vi.advanceTimersByTimeAsync(5_000);
+      for (let i = 0; i < 40 && exitCode === "pending"; i += 1) {
+        await realSleep(25);
+      }
+      expect(exitCode).toBe(0);
+      expect(entry.database.sqlite.open).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      client.destroy();
+      release();
+    }
     opened.pop();
   });
 });

@@ -127,10 +127,13 @@ const SHUTDOWN_GRACE_MS = 5_000;
 function shutdown(signal: NodeJS.Signals): void {
   logger.info({ signal }, "shutting down");
   const jobsStopped = jobs.stop();
+  // One deadline from the start of the shutdown bounds both the connection
+  // drain and the job wait; it is not unref'd, so it keeps the process alive
+  // until the database is closed.
+  const grace = new Promise<void>((resolve) => {
+    setTimeout(resolve, SHUTDOWN_GRACE_MS);
+  });
   server.close(() => {
-    const grace = new Promise<void>((resolve) => {
-      setTimeout(resolve, SHUTDOWN_GRACE_MS);
-    });
     void Promise.race([jobsStopped, grace]).then(() => {
       database.sqlite.close();
       process.exit(0);
