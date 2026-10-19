@@ -18,7 +18,7 @@ export const REPOSITORY_STATES_BATCH = 25;
 const ROUTE = "GET /installation/repositories";
 // An ETag no response carries, so a page that has no stored ETag is fetched
 // through the conditional route and yields the ETag to keep.
-const NO_ETAG = '"crossboard-no-etag"';
+export const NO_ETAG = '"crossboard-no-etag"';
 // Keeps one statement under SQLite's bound-parameter limit.
 const CHUNK = 200;
 
@@ -278,6 +278,7 @@ export function createDiscovery({
                       openIssueCount: 0,
                       lastFullSyncAt: at,
                       reconcileSince: new Date(at).toISOString(),
+                      restEtag: null,
                     }
                   : {
                       syncState: "pending" as const,

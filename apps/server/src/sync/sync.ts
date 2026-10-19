@@ -318,6 +318,7 @@ export function createSync({
           syncDetail: null,
           lastFullSyncAt: now(),
           reconcileSince: new Date(startedAt).toISOString(),
+          restEtag: null,
         },
         ["syncing"],
       )

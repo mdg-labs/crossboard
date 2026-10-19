@@ -1015,6 +1015,63 @@ describe("process entry", () => {
       }
     });
 
+    it("schedules the reconciliation of the ready repositories", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.db
+        .insert(schema.repos)
+        .values({
+          id: "R_1",
+          databaseId: 1,
+          installationId: INSTALLATION_ID,
+          owner: "octocat",
+          name: "repo-1",
+          private: false,
+          syncState: "ready",
+          openIssueCount: 0,
+          lastFullSyncAt: 1,
+          reconcileSince: "2026-01-01T00:00:00.000Z",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      // The lookup by node id resolves issues for the installation that owns
+      // the repo, which the fake names by its own token.
+      repoWithIssues();
+      (github.world.repos[0] as { installationId?: number }).installationId =
+        INSTALLATION_ID;
+      fake.server.use(...github.handlers);
+      try {
+        const entry = await start();
+        expect(() => entry.jobs.schedule("sync.reconcile", 1000)).toThrow(
+          /already scheduled/,
+        );
+        expect(issueIds(entry)).toEqual([]);
+        expect(entry.jobs.enqueue("sync.reconcile", undefined)).toBe(true);
+        await until(() => issueIds(entry).length === 3);
+        expect(issueIds(entry)).toEqual([
+          { id: "I_1" },
+          { id: "I_2" },
+          { id: "I_3" },
+        ]);
+        expect(
+          entry.database.sqlite
+            .prepare("SELECT last_reconciled_at FROM repos")
+            .pluck()
+            .get(),
+        ).not.toBeNull();
+      } finally {
+        fake.close();
+      }
+    });
+
     it("discovers and syncs an installation when an access computation makes it active", async () => {
       const seed = openAndMigrate(dataDir);
       const live = signIn(seed.db, addUser(seed.db, "octocat").id);

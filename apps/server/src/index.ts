@@ -30,6 +30,7 @@ import {
   registerDiscoveryJob,
   registerDiscoverySchedule,
 } from "./sync/discovery.js";
+import { createReconcile, registerReconcileJobs } from "./sync/reconcile.js";
 import { createRefetch } from "./sync/refetch.js";
 import { registerResyncJob } from "./sync/resync.js";
 import {
@@ -137,6 +138,23 @@ export const sync = createSync({
 });
 registerSyncJob(jobs, sync);
 registerResyncJob(jobs, database.db, setup.allowlist);
+
+// Polls every ready repo for the issues updated since its last round, the
+// safety net under the webhooks and the only source without them (SPEC §6.3).
+export const reconcile = createReconcile({
+  db: database.db,
+  installations,
+  isActive,
+  issues,
+  logger,
+});
+registerReconcileJobs(
+  jobs,
+  reconcile,
+  database.db,
+  isActive,
+  config.reconcileIntervalMin * 60_000,
+);
 
 export const discovery = createDiscovery({
   db: database.db,
