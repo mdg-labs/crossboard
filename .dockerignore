@@ -25,7 +25,8 @@ data
 
 # not needed to build the image
 docs
-e2e
+e2e/*
+!e2e/package.json
 Dockerfile
 .dockerignore
 docker-compose*.yml

@@ -41,6 +41,8 @@ export default defineConfig(
     "**/node_modules/",
     "**/dist/",
     "**/coverage/",
+    "**/test-results/",
+    "**/playwright-report/",
     "**/.pnpm-store/",
     ".claude/",
     ".agents/",

@@ -49,6 +49,18 @@ jobs:
       - name: Build the Docker image
         run: docker build -t "$IMAGE" .
 
+      # --with-deps also installs the system libraries Chromium links against.
+      - name: Install the Playwright browser
+        run: pnpm --filter ./e2e exec playwright install --with-deps chromium
+
+      # Runs the built image against a fake GitHub on the runner's loopback
+      # interface (the container shares the host network); nothing here talks
+      # to the real GitHub.
+      - name: End-to-end tests
+        env:
+          CROSSBOARD_E2E_IMAGE: ${{ env.IMAGE }}
+        run: pnpm --filter ./e2e test:e2e
+
       - name: Remove the Docker image
         if: always()
         run: docker image rm --force "$IMAGE"

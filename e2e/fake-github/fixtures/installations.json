@@ -1,0 +1,30 @@
+[
+  {
+    "id": 1001,
+    "app_id": 12345,
+    "target_type": "User",
+    "account": { "id": 583231, "login": "octocat", "type": "User" },
+    "suspended_at": null,
+    "repository_selection": "all"
+  },
+  {
+    "id": 1002,
+    "app_id": 12345,
+    "target_type": "Organization",
+    "account": { "id": 700001, "login": "acme", "type": "Organization" },
+    "suspended_at": null,
+    "repository_selection": "selected"
+  },
+  {
+    "id": 2001,
+    "app_id": 12345,
+    "target_type": "Organization",
+    "account": {
+      "id": 700002,
+      "login": "mallory-labs",
+      "type": "Organization"
+    },
+    "suspended_at": null,
+    "repository_selection": "all"
+  }
+]
