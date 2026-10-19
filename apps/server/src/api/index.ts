@@ -1,14 +1,16 @@
 import { Hono } from "hono";
 import type { Setup } from "../auth/setup/index.js";
 import type { Db } from "../db/index.js";
-import type { GithubClient } from "../github/index.js";
+import type { GithubBudgets, GithubClient } from "../github/index.js";
 import type { IssueDetailsLoader } from "../issues/index.js";
+import type { Jobs } from "../jobs/index.js";
 import { createBoardRoutes } from "./boards.js";
 import { createBoardTransferRoutes } from "./boards-transfer.js";
 import { createDetailRoutes } from "./details.js";
 import { createIssueRoutes } from "./issues.js";
 import { createMeRoutes } from "./me.js";
 import { createSuggestRoutes } from "./suggest.js";
+import { createSyncRoutes } from "./sync.js";
 import { createViewRoutes } from "./views.js";
 
 export interface ApiOptions {
@@ -18,6 +20,8 @@ export interface ApiOptions {
   db: Db;
   setup: Setup;
   details: IssueDetailsLoader;
+  budgets: GithubBudgets;
+  jobs: Jobs;
 }
 
 export function createApi(options: ApiOptions) {
@@ -31,5 +35,14 @@ export function createApi(options: ApiOptions) {
     .route("/", createSuggestRoutes({ db: options.db }))
     .route("/", createViewRoutes({ db: options.db }))
     .route("/", createBoardRoutes({ db: options.db }))
-    .route("/", createBoardTransferRoutes({ db: options.db }));
+    .route("/", createBoardTransferRoutes({ db: options.db }))
+    .route(
+      "/",
+      createSyncRoutes({
+        db: options.db,
+        setup: options.setup,
+        budgets: options.budgets,
+        jobs: options.jobs,
+      }),
+    );
 }

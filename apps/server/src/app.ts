@@ -113,6 +113,8 @@ export function createApp(options: AppOptions) {
         db: options.db,
         setup: options.setup,
         details,
+        budgets: options.installations.budgets,
+        jobs: options.jobs,
       }),
     );
 

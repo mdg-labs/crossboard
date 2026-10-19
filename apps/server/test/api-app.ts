@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createApp } from "../src/app.js";
+import { createApp, type AppOptions } from "../src/app.js";
 import { createSetup } from "../src/auth/setup/index.js";
 import { loadConfig } from "../src/config/index.js";
 import { schema } from "../src/db/index.js";
@@ -26,7 +26,11 @@ export const jsonHeaders = (cookie: string) => ({
 });
 
 /** A fully wired app over the test database, with a stub SPA bundle in `dir`. */
-export function buildApiApp(database: TestDatabase, dir: string) {
+export function buildApiApp(
+  database: TestDatabase,
+  dir: string,
+  overrides: Partial<Pick<AppOptions, "installations" | "jobs">> = {},
+) {
   mkdirSync(join(dir, "dist"), { recursive: true });
   writeFileSync(join(dir, "dist", "index.html"), "<!doctype html>");
   const logger = createLogger("silent");
@@ -47,6 +51,7 @@ export function buildApiApp(database: TestDatabase, dir: string) {
     github,
     installations: unusedInstallations,
     jobs: unusedJobs,
+    ...overrides,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,

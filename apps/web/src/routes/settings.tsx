@@ -27,6 +27,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  BudgetsSection,
+  RepositoriesCard,
+} from "@/components/settings/sync-sections";
 import { meQuery } from "@/lib/me";
 
 function InstallLink({
@@ -149,6 +153,8 @@ export function SettingsRoute(): React.ReactElement {
           )}
         </CardPanel>
       </Card>
+      <RepositoriesCard />
+      <BudgetsSection />
     </div>
   );
 }

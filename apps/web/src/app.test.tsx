@@ -30,7 +30,7 @@ describe("shell", () => {
     expect(screen.getByRole("banner")).toBeTruthy();
     expect(screen.getByRole("toolbar")).toBeTruthy();
     expect(screen.getByRole("button", { name: /all issues/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Sync status" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "User menu" })).toBeTruthy();
     const main = screen.getByRole("main");
     const section = main.querySelector("section[aria-label='Issues']");
@@ -78,7 +78,7 @@ describe("shell", () => {
     fireEvent.keyDown(first, { key: "ArrowRight" });
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByRole("button", { name: "Sync status" }),
+        screen.getByRole("button", { name: "Refresh" }),
       ),
     );
   });
