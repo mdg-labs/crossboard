@@ -23,6 +23,8 @@ import { createLogger } from "../src/logger.js";
 import {
   APP_ID,
   APP_PRIVATE_KEY,
+  CLIENT_ID,
+  CLIENT_SECRET,
   createFakeGithub,
   FAKE_API_URL,
   FAKE_WEB_URL,
@@ -392,6 +394,72 @@ describe("retrying other failures", () => {
     await expect(getIssues()).rejects.toMatchObject({ status: 404 });
     expect(sleeps).toEqual([]);
     expect(seen).toHaveLength(1);
+  });
+});
+
+describe("single-use exchanges", () => {
+  const app = { clientId: CLIENT_ID, clientSecret: CLIENT_SECRET };
+  const OAUTH = `${FAKE_WEB_URL}/login/oauth/access_token`;
+
+  /** Answers the OAuth endpoint with `failures` in turn, then the real fake. */
+  function failOAuth(failures: (() => Response)[]) {
+    const seen: Request[] = [];
+    fake.server.use(
+      http.post(OAUTH, ({ request }) => {
+        seen.push(request);
+        return failures[seen.length - 1]?.();
+      }),
+    );
+    return seen;
+  }
+
+  it("does not retry a refresh after a server error", async () => {
+    const seen = failOAuth([
+      () => HttpResponse.json({ message: "nope" }, { status: 502 }),
+    ]);
+    await expect(
+      github.refreshOAuthToken(app, "good-refresh"),
+    ).rejects.toMatchObject({ status: 502 });
+    expect(sleeps).toEqual([]);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("does not retry a code exchange after a network failure", async () => {
+    const seen = failOAuth([() => HttpResponse.error()]);
+    await expect(
+      github.exchangeOAuthCode(app, "good-code"),
+    ).rejects.toBeInstanceOf(GithubError);
+    expect(sleeps).toEqual([]);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("does not retry a manifest conversion after a server error", async () => {
+    let calls = 0;
+    fake.server.use(
+      http.post(`${FAKE_API_URL}/app-manifests/:code/conversions`, () => {
+        calls++;
+        return HttpResponse.json({ message: "nope" }, { status: 500 });
+      }),
+    );
+    await expect(
+      github.convertManifest("good-manifest-code"),
+    ).rejects.toMatchObject({ status: 500 });
+    expect(sleeps).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
+  it("still waits for a reported limit, then sends the exchange again", async () => {
+    const seen = failOAuth([
+      () =>
+        HttpResponse.json(
+          { message: "slow down" },
+          { status: 429, headers: { "retry-after": "5" } },
+        ),
+    ]);
+    const tokens = await github.refreshOAuthToken(app, "good-refresh");
+    expect(tokens.accessToken).toBe("ghu_new_access_token_value");
+    expect(sleeps).toEqual([5_000]);
+    expect(seen).toHaveLength(2);
   });
 });
 

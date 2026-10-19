@@ -338,13 +338,21 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
     query?: string;
     /** A `304` is an answer, not a failure. */
     conditional?: boolean;
+    /**
+     * False for single-use exchanges (an OAuth code or refresh token, a
+     * manifest code): GitHub may have consumed it before the answer was lost,
+     * so a retry would replay it. Rate-limit waits still apply, since GitHub
+     * did not process a request it limited.
+     */
+    retry?: boolean;
   }
 
   /**
    * Every request goes through here. It holds at most 2 requests in flight
    * per installation and 4 overall, books the budget the response reports to
    * the installation, waits as GitHub says after a rate-limit `403`/`429`,
-   * and retries other transient failures after 1 s, 4 s and 16 s. It logs the
+   * and retries other transient failures after 1 s, 4 s and 16 s unless
+   * `retry` is false. It logs the
    * route template and the outcome at `debug` (never a token, URL parameter
    * or body) and turns a failure into a GithubError that carries status and
    * GitHub's message only.
@@ -432,6 +440,7 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
             ? undefined
             : waitMsFromHeaders(status, headers, now());
         const transient =
+          info.retry !== false &&
           status !== undefined &&
           (status >= 500 || status === 403 || status === 429);
         const waitMs =
@@ -487,14 +496,17 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
     grant: Record<string, string>,
   ): Promise<GithubOAuthTokens> {
     const route = "POST /login/oauth/access_token";
-    const data = await callData(route, () =>
-      octokit.request(route, {
-        baseUrl: options.webUrl,
-        headers: { accept: "application/json" },
-        client_id: app.clientId,
-        client_secret: app.clientSecret,
-        ...grant,
-      }),
+    const data = await callData(
+      route,
+      () =>
+        octokit.request(route, {
+          baseUrl: options.webUrl,
+          headers: { accept: "application/json" },
+          client_id: app.clientId,
+          client_secret: app.clientSecret,
+          ...grant,
+        }),
+      { retry: false },
     );
     // GitHub reports a rejected code or refresh token as 200 with an error body.
     const failure = oauthFailureSchema.safeParse(data);
@@ -679,7 +691,9 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
       const route = "POST /app-manifests/{code}/conversions";
       const app = parse(
         manifestSchema,
-        await callData(route, () => octokit.request(route, { code })),
+        await callData(route, () => octokit.request(route, { code }), {
+          retry: false,
+        }),
         "manifest conversion",
       );
       return {
