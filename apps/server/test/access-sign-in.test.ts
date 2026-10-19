@@ -329,9 +329,76 @@ describe("one refresh per user across the access job and the sign-in", () => {
       .from(schema.userTokens)
       .where(eq(schema.userTokens.userId, stored.id))
       .get();
+    // The rotated pair belongs to the replaced refresh token, so the newer
+    // sign-in's row stays.
     expect(decrypt(row?.refreshTokenEnc ?? "", APP_SECRET)).toBe(
-      "refresh-after",
+      "refresh-from-sign-in",
     );
     expect(accessOf("alice")).toEqual(["R_10"]);
+  });
+
+  it("keeps the tokens a sign-in wrote while a refresh with older tokens is in flight and then fails", async () => {
+    const stored = addUserWithId(people.alice.id, "alice");
+    storeTokens(database.db, APP_SECRET, stored.id, {
+      access: "ghu_alice_stale",
+      refresh: "refresh-revoked",
+      accessExpiresAt: Date.now() + 60_000,
+    });
+    worlds[people.alice.token] = {
+      installations: [{ id: 1, login: "alice" }],
+      repos: { 1: [repoOf(10, "alice", "notes")] },
+    };
+
+    const refreshes: string[] = [];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fake.server.use(
+      http.post(
+        `${FAKE_WEB_URL}/login/oauth/access_token`,
+        async ({ request }) => {
+          const body = (await request.json()) as Record<string, string>;
+          if (body.grant_type !== "refresh_token") {
+            return HttpResponse.json({
+              access_token: people.alice.token,
+              expires_in: 28800,
+              refresh_token: "refresh-from-sign-in",
+              refresh_token_expires_in: 15811200,
+            });
+          }
+          refreshes.push(body.refresh_token ?? "");
+          await gate;
+          return HttpResponse.json({
+            error: "bad_refresh_token",
+            error_description: "The refresh token passed is incorrect.",
+          });
+        },
+      ),
+    );
+
+    const app = build();
+    const job = access.compute(stored.id);
+    await vi.waitFor(() => {
+      expect(refreshes).toEqual(["refresh-revoked"]);
+    });
+    const response = await signInAs(app, "alice");
+    expect(response.status).toBe(302);
+    release();
+    await job;
+
+    expect(refreshes).toEqual(["refresh-revoked"]);
+    const row = database.db
+      .select()
+      .from(schema.userTokens)
+      .where(eq(schema.userTokens.userId, stored.id))
+      .get();
+    expect(decrypt(row?.accessTokenEnc ?? "", APP_SECRET)).toBe(
+      people.alice.token,
+    );
+    expect(decrypt(row?.refreshTokenEnc ?? "", APP_SECRET)).toBe(
+      "refresh-from-sign-in",
+    );
+    expect(database.db.select().from(schema.sessions).all()).toHaveLength(1);
   });
 });
