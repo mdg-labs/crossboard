@@ -237,3 +237,75 @@ export const viewPatchSchema = z
       message: "Send at least one of name, filter and sort",
     },
   );
+
+export const BOARD_NAME_MAX = 100;
+export const BOARD_COLUMNS_MAX = 20;
+
+export const SUB_ISSUE_MODES = ["collapsed", "expanded"] as const;
+
+export const subIssueModeSchema = z.enum(SUB_ISSUE_MODES);
+
+export type SubIssueMode = z.infer<typeof subIssueModeSchema>;
+
+const boardNameSchema = z.string().trim().min(1).max(BOARD_NAME_MAX);
+
+const boardColumnInputSchema = z.object({
+  name: boardNameSchema,
+  filter: z.string().default(""),
+});
+
+const boardColumnsInputSchema = z
+  .array(boardColumnInputSchema)
+  .min(1)
+  .max(BOARD_COLUMNS_MAX);
+
+export const boardColumnSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  filter: z.string(),
+});
+
+/** A board of SPEC FR-28: a base filter and ordered columns that are filters. */
+export const boardSchema = z.object({
+  id: z.number().int(),
+  name: z.string(),
+  baseFilter: z.string(),
+  sort: sortSchema,
+  subIssueMode: subIssueModeSchema,
+  showOther: z.boolean(),
+  columns: z.array(boardColumnSchema),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+});
+
+export type Board = z.infer<typeof boardSchema>;
+
+export const boardListSchema = z.object({ items: z.array(boardSchema) });
+
+export const boardCreateSchema = z.object({
+  name: boardNameSchema,
+  baseFilter: z.string().default(""),
+  columns: boardColumnsInputSchema,
+  sort: sortSchema.default(DEFAULT_SORT),
+  subIssueMode: subIssueModeSchema.default("collapsed"),
+  showOther: z.boolean().default(false),
+});
+
+/** `columns`, when sent, replaces the board's whole column list in order. */
+export const boardPatchSchema = z
+  .object({
+    name: boardNameSchema,
+    baseFilter: z.string(),
+    columns: boardColumnsInputSchema,
+    sort: sortSchema,
+    subIssueMode: subIssueModeSchema,
+    showOther: z.boolean(),
+  })
+  .partial()
+  .refine(
+    (patch) => Object.values(patch).some((value) => value !== undefined),
+    {
+      message:
+        "Send at least one of name, baseFilter, columns, sort, subIssueMode and showOther",
+    },
+  );
