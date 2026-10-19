@@ -30,6 +30,14 @@ export interface UserTokens {
    * limit, throws and changes nothing.
    */
   accessToken(userId: number): Promise<string | null>;
+  /**
+   * Records that GitHub answered 401 to a call made with `accessToken`, which
+   * means the user revoked the authorization. Deletes the user's tokens and
+   * sessions and returns true, unless the stored row no longer holds that
+   * access token (a refresh or a sign-in stored a newer pair since): then
+   * nothing changes and the result is false.
+   */
+  rejected(userId: number, accessToken: string): boolean;
 }
 
 export function createUserTokens({
@@ -120,6 +128,21 @@ export function createUserTokens({
   }
 
   return {
+    rejected(userId, accessToken) {
+      const row = db
+        .select()
+        .from(schema.userTokens)
+        .where(eq(schema.userTokens.userId, userId))
+        .get();
+      if (
+        row === undefined ||
+        decrypt(row.accessTokenEnc, appSecret) !== accessToken
+      ) {
+        return false;
+      }
+      return revoke(userId, row.refreshTokenEnc) === null;
+    },
+
     async accessToken(userId) {
       // The read and the in-flight check share one synchronous step, so a
       // caller never starts a second refresh behind a finished first one.

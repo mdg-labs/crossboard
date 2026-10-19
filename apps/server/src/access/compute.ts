@@ -8,6 +8,7 @@ import type {
   GithubRepository,
 } from "../github/index.js";
 import type { Allowlist } from "../auth/sign-in/index.js";
+import { GithubError } from "../github/index.js";
 import { activeInstallationIds } from "./active.js";
 
 const { installations, repos, userInstallations, userRepoAccess } = schema;
@@ -21,21 +22,35 @@ export interface AccessOptions {
     GithubClient,
     "listUserInstallations" | "listInstallationRepositories"
   >;
-  tokens: Pick<UserTokens, "accessToken">;
+  tokens: Pick<UserTokens, "accessToken" | "rejected">;
   allowlist: Allowlist;
   logger: Logger;
   now?: () => number;
+}
+
+export interface ComputeOptions {
+  /**
+   * Treat a 401 from GitHub as the user having revoked the authorization
+   * (SPEC FR-7): their tokens and sessions are deleted and the result is
+   * `revoked`. Only for a stored token; a token GitHub has just issued that
+   * it rejects is no revocation.
+   */
+  revokeRejected?: boolean;
 }
 
 export interface Access {
   /**
    * Recomputes the user's access (SPEC FR-8) with their token and replaces
    * their `user_installations` and `user_repo_access` rows. Resolves to
-   * `skipped` when the user has no usable token. A GitHub failure throws and
-   * leaves the stored access as it was. The active set (SPEC FR-3) is derived
-   * again afterwards, and the installations it gained or lost are logged.
+   * `skipped` when the user has no usable token, or when a rejected token had
+   * been replaced in the meantime. A GitHub failure throws and leaves the
+   * stored access as it was. The active set (SPEC FR-3) is derived again
+   * afterwards, and the installations it gained or lost are logged.
    */
-  compute(userId: number): Promise<"computed" | "skipped">;
+  compute(
+    userId: number,
+    options?: ComputeOptions,
+  ): Promise<"computed" | "skipped" | "revoked">;
 }
 
 const chunks = <T>(items: readonly T[]): T[][] => {
@@ -178,13 +193,25 @@ export function createAccess({
   }
 
   return {
-    async compute(userId) {
+    async compute(userId, { revokeRejected = false } = {}) {
       const token = await tokens.accessToken(userId);
       if (token === null) {
         logger.info({ userId }, "access not computed: the user has no token");
         return "skipped";
       }
-      const reached = await fetchReached(token);
+      let reached;
+      try {
+        reached = await fetchReached(token);
+      } catch (error) {
+        if (
+          revokeRejected &&
+          error instanceof GithubError &&
+          error.status === 401
+        ) {
+          return tokens.rejected(userId, token) ? "revoked" : "skipped";
+        }
+        throw error;
+      }
       const before = activeInstallationIds(db, allowlist);
       const granted = store(userId, reached, now());
       const after = activeInstallationIds(db, allowlist);

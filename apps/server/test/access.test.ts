@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import { http, HttpResponse } from "msw";
 import {
   afterAll,
   afterEach,
@@ -21,20 +22,26 @@ import {
   hasRepoAccess,
   inUserAccess,
 } from "../src/access/scope.js";
+import { createApp } from "../src/app.js";
+import { createSetup } from "../src/auth/setup/index.js";
+import { loadConfig } from "../src/config/index.js";
 import { SESSION_TTL_MS, createSession } from "../src/auth/sessions/index.js";
 import { createUserTokens } from "../src/auth/tokens.js";
 import { schema } from "../src/db/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createJobs } from "../src/jobs/index.js";
 import { createLogger } from "../src/logger.js";
+import { decrypt, encrypt } from "../src/security/index.js";
 import {
   accessHandlers,
+  installationPayload,
   storeTokens,
   type World,
   type WorldRepo,
 } from "./access.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { createFakeGithub, FAKE_API_URL, FAKE_WEB_URL } from "./github-fake.js";
+import { githubEnv, validEnv } from "./helpers.js";
 import { addUser, signIn } from "./sign-in.js";
 
 const APP_SECRET = "a".repeat(32);
@@ -105,8 +112,42 @@ function build(
     logger,
     ...(now === undefined ? {} : { now }),
   });
-  return { access, tokens, logger };
+  return { access, tokens, logger, github };
 }
+
+/** The real app over the same database, to ask what a session still reaches. */
+function appFor({
+  access,
+  github,
+  logger,
+}: Pick<ReturnType<typeof build>, "access" | "github" | "logger">) {
+  const config = loadConfig({ ...validEnv, ...githubEnv });
+  return createApp({
+    logger,
+    db: database.db,
+    github,
+    version: "1.0.0",
+    webRoot: "/nonexistent",
+    setup: createSetup({ db: database.db, config, logger }),
+    access,
+    appSecret: config.appSecret,
+    publicUrl: config.publicUrl,
+  });
+}
+
+const tokensOf = (userId: number) =>
+  database.db
+    .select()
+    .from(schema.userTokens)
+    .where(eq(schema.userTokens.userId, userId))
+    .all();
+
+const sessionsOf = (userId: number) =>
+  database.db
+    .select()
+    .from(schema.sessions)
+    .where(eq(schema.sessions.userId, userId))
+    .all();
 
 function userWithToken(login: string, token: string) {
   const user = addUser(database.db, login);
@@ -617,8 +658,13 @@ describe("the hourly job", () => {
     const { access, logger } = build();
     const jobs = createJobs({ logger });
     registerAccessJob(jobs, access, database.db, logger);
-    const first = signIn(database.db, userWithToken("alice", "ghu_unknown").id);
+    const first = signIn(database.db, userWithToken("alice", ALICE).id);
     const second = signIn(database.db, userWithToken("bob", BOB).id);
+    worlds[ALICE] = {
+      installations: [{ id: 1, login: "alice" }],
+      repos: { 1: [repo(10, "alice", "notes")] },
+      failing: [1],
+    };
     worlds[BOB] = {
       installations: [{ id: 2, login: "bob" }],
       repos: { 2: [repo(20, "bob", "secret")] },
@@ -633,6 +679,191 @@ describe("the hourly job", () => {
     expect(
       logs.some((entry) => entry.msg === "computing user access failed"),
     ).toBe(true);
+  });
+
+  it("signs a user out when GitHub rejects their token with 401, and leaves the other users signed in", async () => {
+    const built = build();
+    const { access, logger } = built;
+    const jobs = createJobs({ logger });
+    registerAccessJob(jobs, access, database.db, logger);
+    const alice = signIn(database.db, userWithToken("alice", "ghu_revoked").id);
+    const bob = signIn(database.db, userWithToken("bob", BOB).id);
+    worlds[BOB] = {
+      installations: [{ id: 2, login: "bob" }],
+      repos: { 2: [repo(20, "bob", "secret")] },
+    };
+    const app = appFor(built);
+    expect(
+      (await app.request("/api/me", { headers: { Cookie: alice.cookie } }))
+        .status,
+    ).toBe(200);
+
+    jobs.start();
+    jobs.enqueue(ACCESS_JOB, undefined);
+    await jobs.stop();
+
+    expect(tokensOf(alice.userId)).toEqual([]);
+    expect(sessionsOf(alice.userId)).toEqual([]);
+    expect(
+      (await app.request("/api/me", { headers: { Cookie: alice.cookie } }))
+        .status,
+    ).toBe(401);
+    expect(tokensOf(bob.userId)).toHaveLength(1);
+    expect(sessionsOf(bob.userId)).toHaveLength(1);
+    expect(
+      (await app.request("/api/me", { headers: { Cookie: bob.cookie } }))
+        .status,
+    ).toBe(200);
+    const warned = logs.filter(
+      (entry) =>
+        entry.level === 40 &&
+        entry.msg ===
+          "the user's GitHub tokens are no longer usable; their tokens and sessions were deleted",
+    );
+    expect(warned).toHaveLength(1);
+    expect(warned[0]).toMatchObject({ userId: alice.userId });
+    expect(JSON.stringify(logs)).not.toContain("ghu_revoked");
+  });
+
+  it("signs a user out when the 401 comes from the repositories call", async () => {
+    const { access, logger } = build();
+    const jobs = createJobs({ logger });
+    registerAccessJob(jobs, access, database.db, logger);
+    const alice = signIn(database.db, userWithToken("alice", ALICE).id);
+    fake.server.use(
+      http.get(`${FAKE_API_URL}/user/installations`, () =>
+        HttpResponse.json({
+          total_count: 1,
+          installations: [installationPayload({ id: 1, login: "alice" })],
+        }),
+      ),
+      http.get(
+        `${FAKE_API_URL}/user/installations/:installationId/repositories`,
+        () =>
+          HttpResponse.json({ message: "Bad credentials" }, { status: 401 }),
+      ),
+    );
+
+    jobs.start();
+    jobs.enqueue(ACCESS_JOB, undefined);
+    await jobs.stop();
+
+    expect(tokensOf(alice.userId)).toEqual([]);
+    expect(sessionsOf(alice.userId)).toEqual([]);
+  });
+
+  it.each([403, 500, 502])(
+    "keeps the tokens and sessions when GitHub answers %i",
+    async (status) => {
+      const { access, logger } = build();
+      const jobs = createJobs({ logger });
+      registerAccessJob(jobs, access, database.db, logger);
+      const alice = signIn(database.db, userWithToken("alice", ALICE).id);
+      fake.server.use(
+        http.get(`${FAKE_API_URL}/user/installations`, () =>
+          HttpResponse.json({ message: "no" }, { status }),
+        ),
+      );
+
+      jobs.start();
+      jobs.enqueue(ACCESS_JOB, undefined);
+      await jobs.stop();
+
+      expect(tokensOf(alice.userId)).toHaveLength(1);
+      expect(sessionsOf(alice.userId)).toHaveLength(1);
+      expect(
+        logs.some((entry) => entry.msg === "computing user access failed"),
+      ).toBe(true);
+    },
+  );
+
+  it("keeps the tokens and sessions when the request fails on the network", async () => {
+    const { access, logger } = build();
+    const jobs = createJobs({ logger });
+    registerAccessJob(jobs, access, database.db, logger);
+    const alice = signIn(database.db, userWithToken("alice", ALICE).id);
+    fake.server.use(
+      http.get(`${FAKE_API_URL}/user/installations`, () =>
+        HttpResponse.error(),
+      ),
+    );
+
+    jobs.start();
+    jobs.enqueue(ACCESS_JOB, undefined);
+    await jobs.stop();
+
+    expect(tokensOf(alice.userId)).toHaveLength(1);
+    expect(sessionsOf(alice.userId)).toHaveLength(1);
+    expect(
+      logs.some((entry) => entry.msg === "computing user access failed"),
+    ).toBe(true);
+  });
+
+  it("keeps a sign-in's new tokens and session when its pair was stored while the rejected call was in flight", async () => {
+    const built = build();
+    const { access, logger } = built;
+    const jobs = createJobs({ logger });
+    registerAccessJob(jobs, access, database.db, logger);
+    const alice = signIn(database.db, userWithToken("alice", ALICE).id);
+    let newCookie = "";
+    fake.server.use(
+      http.get(`${FAKE_API_URL}/user/installations`, () => {
+        database.db
+          .update(schema.userTokens)
+          .set({
+            accessTokenEnc: encrypt("ghu_alice_new", APP_SECRET),
+            refreshTokenEnc: encrypt("refresh_new", APP_SECRET),
+          })
+          .where(eq(schema.userTokens.userId, alice.userId))
+          .run();
+        newCookie = signIn(database.db, alice.userId).cookie;
+        return HttpResponse.json(
+          { message: "Bad credentials" },
+          { status: 401 },
+        );
+      }),
+    );
+
+    jobs.start();
+    jobs.enqueue(ACCESS_JOB, undefined);
+    await jobs.stop();
+
+    const [row] = tokensOf(alice.userId);
+    expect(
+      row === undefined ? null : decrypt(row.accessTokenEnc, APP_SECRET),
+    ).toBe("ghu_alice_new");
+    expect(sessionsOf(alice.userId)).toHaveLength(2);
+    expect(
+      (
+        await appFor(built).request("/api/me", {
+          headers: { Cookie: newCookie },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      logs.some((entry) => entry.msg === "computing user access failed"),
+    ).toBe(false);
+  });
+
+  it("does not delete a user's tokens when the computation is not asked to revoke", async () => {
+    const { access } = build();
+    const alice = signIn(database.db, userWithToken("alice", "ghu_unknown").id);
+
+    await expect(access.compute(alice.userId)).rejects.toMatchObject({
+      status: 401,
+    });
+
+    expect(tokensOf(alice.userId)).toHaveLength(1);
+    expect(sessionsOf(alice.userId)).toHaveLength(1);
+  });
+
+  it("reports a revoked user from compute", async () => {
+    const { access } = build();
+    const alice = signIn(database.db, userWithToken("alice", "ghu_unknown").id);
+    expect(await access.compute(alice.userId, { revokeRejected: true })).toBe(
+      "revoked",
+    );
+    expect(tokensOf(alice.userId)).toEqual([]);
   });
 
   it("is scheduled every 60 minutes", async () => {

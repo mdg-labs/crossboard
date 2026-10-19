@@ -262,6 +262,43 @@ describe("a user's access token", () => {
     expect(sessionsOf(userId)).toHaveLength(1);
   });
 
+  describe("when GitHub rejects the access token with 401", () => {
+    it("deletes the user's tokens and sessions, and no other user's", () => {
+      const userId = seed({ access: "ghu_revoked" });
+      const other = seed({ access: "ghu_other" });
+
+      expect(build().rejected(userId, "ghu_revoked")).toBe(true);
+
+      expect(stored(userId)).toBeUndefined();
+      expect(sessionsOf(userId)).toEqual([]);
+      expect(stored(other)).toBeDefined();
+      expect(sessionsOf(other)).toHaveLength(1);
+      const warned = logs
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .filter((entry) => entry.level === 40);
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toMatchObject({ userId });
+      expect(logs.join("")).not.toContain("ghu_revoked");
+    });
+
+    it("changes nothing when the stored access token is no longer the rejected one", () => {
+      const userId = seed({ access: "ghu_new" });
+      const before = stored(userId);
+
+      expect(build().rejected(userId, "ghu_old")).toBe(false);
+
+      expect(stored(userId)).toEqual(before);
+      expect(sessionsOf(userId)).toHaveLength(1);
+    });
+
+    it("changes nothing for a user without stored tokens", () => {
+      const user = addUser(database.db);
+      signIn(database.db, user.id, NOW);
+      expect(build().rejected(user.id, "ghu_old")).toBe(false);
+      expect(sessionsOf(user.id)).toHaveLength(1);
+    });
+  });
+
   it("is null for a user without stored tokens", async () => {
     const userId = addUser(database.db).id;
     expect(await build().accessToken(userId)).toBeNull();
