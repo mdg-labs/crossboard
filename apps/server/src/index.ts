@@ -13,7 +13,10 @@ import { createSetup } from "./auth/setup/index.js";
 import { createUserTokens } from "./auth/tokens.js";
 import { ConfigError, loadConfig, type Config } from "./config/index.js";
 import { openAndMigrate, type DatabaseHandle } from "./db/index.js";
-import { createGithubClient } from "./github/index.js";
+import {
+  createGithubClient,
+  createInstallationClient,
+} from "./github/index.js";
 import { createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
 import { readServerVersion } from "./version.js";
@@ -95,6 +98,13 @@ export const access = createAccess({
   }),
 });
 registerAccessJob(jobs, access, database.db, logger);
+
+// What the sync jobs and the routes that read GitHub data fetch through.
+export const installations = createInstallationClient({
+  github,
+  credentials: () => setup.credentials(),
+  logger,
+});
 
 const app = createApp({
   logger,

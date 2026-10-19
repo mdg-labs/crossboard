@@ -1,7 +1,13 @@
+import { createSign } from "node:crypto";
 import { Octokit, RequestError } from "octokit";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { GithubError } from "./errors.js";
+import {
+  assertGetRoute,
+  assertReadOnlyDocument,
+  type GithubQuery,
+} from "./query.js";
 
 export interface GithubClientOptions {
   /** `config.githubApiUrl` */
@@ -16,6 +22,21 @@ export interface GithubOAuthApp {
   clientId: string;
   clientSecret: string;
 }
+
+/** What signs the App's JWT; the caller owns it, the client never reads config. */
+export interface GithubAppKey {
+  appId: string;
+  privateKey: string;
+}
+
+export interface GithubInstallationToken {
+  token: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+}
+
+/** A REST route the server may call with an installation token. */
+export type GithubGetRoute = `GET ${string}`;
 
 export interface GithubUser {
   id: number;
@@ -62,8 +83,9 @@ export interface GithubManifestConversion {
 
 /**
  * The one place that talks to GitHub. Every method is a `GET` except the
- * credential exchanges D-18 allows: the OAuth code exchange and refresh, and
- * the manifest conversion.
+ * credential exchanges D-18 allows (the OAuth code exchange and refresh, the
+ * manifest conversion, installation access tokens) and `graphql`, which
+ * refuses any document that is not a query.
  */
 export interface GithubClient {
   getUser(token: string): Promise<GithubUser>;
@@ -82,6 +104,28 @@ export interface GithubClient {
     refreshToken: string,
   ): Promise<GithubOAuthTokens>;
   convertManifest(code: string): Promise<GithubManifestConversion>;
+  /** Exchanges the App's signed JWT for an installation access token (D-4). */
+  createInstallationToken(
+    app: GithubAppKey,
+    installationId: number,
+  ): Promise<GithubInstallationToken>;
+  /**
+   * Sends one GraphQL query with a token and returns the response's `data`.
+   * Sends no preview header. Throws GithubDocumentError, without any request,
+   * for a document that holds anything but queries and fragments, and
+   * GithubError when GitHub answers with errors.
+   */
+  graphql(
+    token: string,
+    query: GithubQuery,
+    variables?: Record<string, unknown>,
+  ): Promise<unknown>;
+  /** Sends one REST `GET` with a token and returns the response body. */
+  restGet(
+    token: string,
+    route: GithubGetRoute,
+    params?: Record<string, unknown>,
+  ): Promise<unknown>;
 }
 
 const userSchema = z.object({
@@ -137,6 +181,53 @@ const manifestSchema = z.object({
   webhook_secret: z.string(),
   pem: z.string(),
 });
+
+const installationTokenSchema = z.object({
+  token: z.string().min(1),
+  expires_at: z.string(),
+});
+
+const graphqlResponseSchema = z.object({
+  data: z.unknown().optional(),
+  errors: z
+    .array(
+      z.object({
+        message: z.string().optional(),
+        type: z.string().optional(),
+      }),
+    )
+    .optional(),
+});
+
+/** GitHub caps the App JWT's lifetime at 10 minutes and tolerates clock drift of a minute. */
+const JWT_BACKDATE_SECONDS = 60;
+const JWT_LIFETIME_SECONDS = 9 * 60;
+
+function base64url(value: string | Buffer): string {
+  return Buffer.from(value).toString("base64url");
+}
+
+function signAppJwt(app: GithubAppKey): string {
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const unsigned = [
+    base64url(JSON.stringify({ alg: "RS256", typ: "JWT" })),
+    base64url(
+      JSON.stringify({
+        iat: issuedAt - JWT_BACKDATE_SECONDS,
+        exp: issuedAt + JWT_LIFETIME_SECONDS,
+        iss: app.appId,
+      }),
+    ),
+  ].join(".");
+  try {
+    const signature = createSign("RSA-SHA256")
+      .update(unsigned)
+      .sign(app.privateKey);
+    return `${unsigned}.${base64url(signature)}`;
+  } catch {
+    throw new Error("the GitHub App private key cannot sign a JWT");
+  }
+}
 
 function parse<T>(schema: z.ZodType<T>, data: unknown, what: string): T {
   const result = schema.safeParse(data);
@@ -236,6 +327,57 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
   }
 
   return {
+    async createInstallationToken(app, installationId) {
+      const route = "POST /app/installations/{installation_id}/access_tokens";
+      const created = parse(
+        installationTokenSchema,
+        await call(route, () =>
+          octokit.request(route, {
+            installation_id: installationId,
+            headers: bearer(signAppJwt(app)),
+          }),
+        ),
+        "installation token",
+      );
+      const expiresAt = Date.parse(created.expires_at);
+      if (Number.isNaN(expiresAt)) {
+        throw new GithubError(502, "unexpected installation token response");
+      }
+      return { token: created.token, expiresAt };
+    },
+
+    async graphql(token, query, variables) {
+      assertReadOnlyDocument(query.document);
+      const route = "POST /graphql";
+      const response = parse(
+        graphqlResponseSchema,
+        await call(route, () =>
+          octokit.request(route, {
+            headers: bearer(token),
+            query: query.document,
+            variables: variables ?? {},
+          }),
+        ),
+        "GraphQL",
+      );
+      if (response.errors !== undefined && response.errors.length > 0) {
+        const [first] = response.errors;
+        throw new GithubError(
+          502,
+          first?.message ?? "GraphQL query failed",
+          first?.type,
+        );
+      }
+      return response.data;
+    },
+
+    async restGet(token, route, params) {
+      assertGetRoute(route, params);
+      return call(route, () =>
+        octokit.request(route, { ...params, headers: bearer(token) }),
+      );
+    },
+
     async getUser(token) {
       const route = "GET /user";
       const user = parse(

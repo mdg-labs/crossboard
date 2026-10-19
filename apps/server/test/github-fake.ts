@@ -1,3 +1,4 @@
+import { createVerify, generateKeyPairSync } from "node:crypto";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 
@@ -14,6 +15,35 @@ export const fakeUser = {
   name: "The Octocat",
   avatar_url: "https://avatars.githubusercontent.com/u/583231",
 };
+
+export const APP_ID = "99";
+const appKeys = generateKeyPairSync("rsa", { modulusLength: 2048 });
+export const APP_PRIVATE_KEY = appKeys.privateKey
+  .export({ type: "pkcs1", format: "pem" })
+  .toString();
+
+export const INSTALLATION_ID = 7;
+const INSTALLATION_TOKEN_PREFIX = "ghs_fake_installation_token_";
+
+/** Controls the installation token endpoint; `reset` restores the defaults. */
+export const installationTokens = {
+  issued: [] as string[],
+  revoked: new Set<string>(),
+  ttlMs: 60 * 60 * 1000,
+  jwts: [] as string[],
+};
+
+export function issueInstallationToken(): string {
+  const token = `${INSTALLATION_TOKEN_PREFIX}${String(installationTokens.issued.length + 1)}`;
+  installationTokens.issued.push(token);
+  return token;
+}
+
+/** Each GraphQL request the fake received. */
+export const graphqlRequests: {
+  headers: Record<string, string>;
+  body: { query: string; variables: Record<string, unknown> };
+}[] = [];
 
 const PAGE_SIZE = 2;
 
@@ -61,6 +91,41 @@ function authorized(request: Request): boolean {
 
 const badCredentials = () =>
   HttpResponse.json({ message: "Bad credentials" }, { status: 401 });
+
+/** True for a JWT signed by the fake App's key, issued for it and live for at most 10 minutes. */
+function validAppJwt(request: Request): boolean {
+  const [scheme, jwt] = (request.headers.get("authorization") ?? "").split(" ");
+  const [header, payload, signature] = (jwt ?? "").split(".");
+  if (scheme !== "Bearer" || !header || !payload || !signature) return false;
+  const verified = createVerify("RSA-SHA256")
+    .update(`${header}.${payload}`)
+    .verify(appKeys.publicKey, Buffer.from(signature, "base64url"));
+  const claims = JSON.parse(
+    Buffer.from(payload, "base64url").toString("utf8"),
+  ) as { iss: string; iat: number; exp: number };
+  const now = Date.now() / 1000;
+  installationTokens.jwts.push(jwt ?? "");
+  return (
+    verified &&
+    JSON.parse(Buffer.from(header, "base64url").toString("utf8")).alg ===
+      "RS256" &&
+    claims.iss === APP_ID &&
+    claims.iat <= now &&
+    claims.exp > now &&
+    claims.exp - claims.iat <= 10 * 60
+  );
+}
+
+function installationAuthorized(request: Request): boolean {
+  const token = (request.headers.get("authorization") ?? "").replace(
+    "Bearer ",
+    "",
+  );
+  return (
+    installationTokens.issued.includes(token) &&
+    !installationTokens.revoked.has(token)
+  );
+}
 
 function paged(request: Request, key: string, items: unknown[]) {
   const url = new URL(request.url);
@@ -116,6 +181,51 @@ export const githubHandlers = [
           error_description: "The code passed is incorrect or expired.",
         });
   }),
+  http.post(
+    `${FAKE_API_URL}/app/installations/:installationId/access_tokens`,
+    ({ request, params }) => {
+      if (!validAppJwt(request)) {
+        return HttpResponse.json(
+          { message: "A JSON web token could not be decoded" },
+          { status: 401 },
+        );
+      }
+      if (params.installationId !== String(INSTALLATION_ID)) {
+        return HttpResponse.json({ message: "Not Found" }, { status: 404 });
+      }
+      const token = issueInstallationToken();
+      return HttpResponse.json(
+        {
+          token,
+          expires_at: new Date(
+            Date.now() + installationTokens.ttlMs,
+          ).toISOString(),
+        },
+        { status: 201 },
+      );
+    },
+  ),
+  http.post(`${FAKE_API_URL}/graphql`, async ({ request }) => {
+    graphqlRequests.push({
+      headers: Object.fromEntries(request.headers.entries()),
+      body: (await request.clone().json()) as never,
+    });
+    if (!installationAuthorized(request)) return badCredentials();
+    return HttpResponse.json({
+      data: {
+        rateLimit: { cost: 4, remaining: 4996 },
+        repository: { issues: { totalCount: 0, nodes: [] } },
+      },
+    });
+  }),
+  http.get(`${FAKE_API_URL}/installation/repositories`, ({ request }) =>
+    installationAuthorized(request)
+      ? HttpResponse.json({
+          total_count: 1,
+          repositories: [fakeRepositories[0]],
+        })
+      : badCredentials(),
+  ),
   http.post(`${FAKE_API_URL}/app-manifests/:code/conversions`, ({ params }) =>
     params.code === "good-manifest-code"
       ? HttpResponse.json(fakeManifestApp, { status: 201 })
@@ -139,6 +249,11 @@ export function createFakeGithub() {
     listen: () => server.listen({ onUnhandledFrame: "error" }),
     reset: () => {
       requests.length = 0;
+      graphqlRequests.length = 0;
+      installationTokens.issued.length = 0;
+      installationTokens.jwts.length = 0;
+      installationTokens.revoked.clear();
+      installationTokens.ttlMs = 60 * 60 * 1000;
       server.resetHandlers();
     },
     close: () => server.close(),

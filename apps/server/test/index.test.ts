@@ -6,14 +6,19 @@ import { connect } from "node:net";
 import { setTimeout as realSleep } from "node:timers/promises";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queries } from "../src/github/index.js";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
 import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
 import { openAndMigrate, schema } from "../src/db/index.js";
 import { addUser, signIn } from "./sign-in.js";
 import { accessHandlers, storeTokens } from "./access.js";
 import {
+  APP_ID,
+  APP_PRIVATE_KEY,
   createFakeGithub,
   FAKE_API_URL,
+  graphqlRequests,
+  INSTALLATION_ID,
   FAKE_WEB_URL,
   USER_TOKEN,
 } from "./github-fake.js";
@@ -408,6 +413,38 @@ describe("process entry", () => {
       expect(fake.requests).toEqual([
         { method: "GET", url: `${FAKE_API_URL}/user` },
       ]);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("creates the installation client that queries GitHub with installation tokens", async () => {
+    stubEnv({
+      ...validEnv,
+      ...githubEnv,
+      GITHUB_APP_ID: APP_ID,
+      GITHUB_PRIVATE_KEY: APP_PRIVATE_KEY,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const fake = createFakeGithub();
+    fake.listen();
+    try {
+      const entry = await start();
+      expect(
+        await entry.installations.graphql(
+          INSTALLATION_ID,
+          queries.openIssuesPage,
+          { owner: "octocat", name: "repo-1" },
+          { repo: "octocat/repo-1" },
+        ),
+      ).toMatchObject({ rateLimit: { cost: 4 } });
+      expect(fake.requests.map((request) => request.method)).toEqual([
+        "POST",
+        "POST",
+      ]);
+      expect(graphqlRequests).toHaveLength(1);
+      expect(output.join("")).not.toContain("ghs_fake_installation_token");
     } finally {
       fake.close();
     }
