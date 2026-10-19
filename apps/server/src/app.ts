@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { Logger } from "pino";
-import type { Access } from "./access/index.js";
+import { activeInstallationIds, type Access } from "./access/index.js";
 import { createApi } from "./api/index.js";
 import { createErrorHandler, notFound } from "./api/errors.js";
 import {
@@ -18,7 +18,12 @@ import {
   requirePageSession,
 } from "./auth/sessions/index.js";
 import type { Db } from "./db/index.js";
-import type { GithubClient } from "./github/index.js";
+import {
+  createInstallationClient,
+  type GithubClient,
+  type InstallationClient,
+} from "./github/index.js";
+import { createIssueDetails } from "./issues/index.js";
 import {
   contentSecurityPolicy,
   protectStateChanges,
@@ -34,10 +39,29 @@ export interface AppOptions {
   access: Access;
   appSecret: string;
   publicUrl: string;
+  /**
+   * What the routes that read GitHub data call as an installation; one built
+   * from `github` and the setup credentials when omitted.
+   */
+  installations?: Pick<InstallationClient, "budgets" | "graphql">;
 }
 
 export function createApp(options: AppOptions) {
   const sessionOptions = { db: options.db, publicUrl: options.publicUrl };
+  const details = createIssueDetails({
+    db: options.db,
+    installations:
+      options.installations ??
+      createInstallationClient({
+        github: options.github,
+        credentials: () => options.setup.credentials(),
+      }),
+    isActive: (installationId) =>
+      activeInstallationIds(options.db, options.setup.allowlist).has(
+        installationId,
+      ),
+    logger: options.logger,
+  });
   const app = new Hono()
     .use(contentSecurityPolicy())
     .use(setupGate(options.setup, options.webRoot))
@@ -79,6 +103,7 @@ export function createApp(options: AppOptions) {
         github: options.github,
         db: options.db,
         setup: options.setup,
+        details,
       }),
     );
 

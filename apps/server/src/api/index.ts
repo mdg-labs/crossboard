@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type { Setup } from "../auth/setup/index.js";
 import type { Db } from "../db/index.js";
 import type { GithubClient } from "../github/index.js";
+import type { IssueDetailsLoader } from "../issues/index.js";
+import { createDetailRoutes } from "./details.js";
 import { createIssueRoutes } from "./issues.js";
 import { createMeRoutes } from "./me.js";
 import { createSuggestRoutes } from "./suggest.js";
@@ -13,6 +15,7 @@ export interface ApiOptions {
   github: GithubClient;
   db: Db;
   setup: Setup;
+  details: IssueDetailsLoader;
 }
 
 export function createApi(options: ApiOptions) {
@@ -22,6 +25,7 @@ export function createApi(options: ApiOptions) {
     )
     .route("/", createMeRoutes({ db: options.db, setup: options.setup }))
     .route("/", createIssueRoutes({ db: options.db }))
+    .route("/", createDetailRoutes({ details: options.details }))
     .route("/", createSuggestRoutes({ db: options.db }))
     .route("/", createViewRoutes({ db: options.db }));
 }

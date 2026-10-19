@@ -99,6 +99,53 @@ export const issueSummarySchema = issueItemSchema.extend({
 
 export type IssueSummary = z.infer<typeof issueSummarySchema>;
 
+/** One comment of the details route (SPEC FR-43); `bodyHtml` is sanitized (FR-41). */
+export const issueCommentSchema = z.object({
+  url: z.string(),
+  createdAt: z.number().int(),
+  /** `ghost` for a deleted account (SPEC §4.3). */
+  author: z.string(),
+  avatarUrl: z.string().nullable(),
+  bodyHtml: z.string(),
+});
+
+export type IssueComment = z.infer<typeof issueCommentSchema>;
+
+export const subIssueSchema = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  title: z.string(),
+  state: issueStateSchema,
+  url: z.string(),
+});
+
+export type SubIssue = z.infer<typeof subIssueSchema>;
+
+/**
+ * The details route's response (SPEC §7.4, FR-42, FR-43): the issue's rendered
+ * body, its most recent comments oldest first, and its first sub-issues.
+ * `commentsTotal` counts every comment, so the UI can show "N earlier
+ * comments"; `subIssues.total` counts every sub-issue on GitHub. Sub-issues in
+ * a repo outside the viewer's access are left out of `items` and counted in
+ * `notAccessible` (SPEC §9.1). `stale` marks a copy that is out of date
+ * because the refetch failed.
+ */
+export const issueDetailsSchema = z.object({
+  bodyHtml: z.string(),
+  comments: z.array(issueCommentSchema),
+  commentsTotal: z.number().int().nonnegative(),
+  subIssues: z.object({
+    total: z.number().int().nonnegative(),
+    notAccessible: z.number().int().nonnegative(),
+    items: z.array(subIssueSchema),
+  }),
+  fetchedAt: z.number().int(),
+  stale: z.boolean(),
+});
+
+export type IssueDetails = z.infer<typeof issueDetailsSchema>;
+
 export const issueParamsSchema = z.object({
   owner: z.string().min(1),
   repo: z.string().min(1),
