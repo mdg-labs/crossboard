@@ -189,3 +189,36 @@ export function waitMsFromHeaders(
   }
   return undefined;
 }
+
+const graphqlRateLimitedSchema = z.object({
+  errors: z.array(z.object({ type: z.string().optional() })),
+});
+
+/**
+ * How long to wait after a GraphQL answer GitHub limited, or undefined when
+ * it was not limited or said nothing about when the budget refills. GitHub
+ * answers a spent primary budget with `200` and an error of type
+ * `RATE_LIMITED`; `x-ratelimit-reset` wins over the body's
+ * `rateLimit.resetAt`.
+ */
+export function graphqlLimitWaitMs(
+  body: unknown,
+  headers: ResponseHeaders,
+  now: number,
+): number | undefined {
+  const parsed = graphqlRateLimitedSchema.safeParse(body);
+  if (
+    !parsed.success ||
+    !parsed.data.errors.some((error) => error.type === "RATE_LIMITED")
+  ) {
+    return undefined;
+  }
+  const reset = integerOf(headerOf(headers, "x-ratelimit-reset"));
+  const resetAt =
+    reset === undefined
+      ? rateLimitFromGraphql(body).budget?.resetAt
+      : reset * 1000;
+  return resetAt === undefined || resetAt === null
+    ? undefined
+    : Math.max(0, resetAt - now);
+}

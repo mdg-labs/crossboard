@@ -9,6 +9,7 @@ import {
   budgetFromHeaders,
   createBudgetStore,
   createSemaphore,
+  graphqlLimitWaitMs,
   MAX_LIMIT_WAITS,
   MAX_REQUESTS_OVERALL,
   MAX_REQUESTS_PER_INSTALLATION,
@@ -350,9 +351,9 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
   /**
    * Every request goes through here. It holds at most 2 requests in flight
    * per installation and 4 overall, books the budget the response reports to
-   * the installation, waits as GitHub says after a rate-limit `403`/`429`,
-   * and retries other transient failures after 1 s, 4 s and 16 s unless
-   * `retry` is false. It logs the
+   * the installation, waits as GitHub says after a rate-limit `403`/`429`
+   * or a GraphQL answer of type `RATE_LIMITED`, and retries other transient
+   * failures after 1 s, 4 s and 16 s unless `retry` is false. It logs the
    * route template and the outcome at `debug` (never a token, URL parameter
    * or body) and turns a failure into a GithubError that carries status and
    * GitHub's message only.
@@ -399,6 +400,29 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
         const response = await limited();
         const headers = response.headers ?? {};
         const booked = book(headers, response.data);
+        const limitWaitMs =
+          resource === "graphql" && limitWaits < MAX_LIMIT_WAITS
+            ? graphqlLimitWaitMs(response.data, headers, now())
+            : undefined;
+        if (limitWaitMs !== undefined) {
+          logger.debug(
+            {
+              route,
+              query: info.query,
+              installationId,
+              repo,
+              status: response.status,
+              attempt,
+              remaining: booked.remaining,
+              durationMs: now() - started,
+              retryInMs: limitWaitMs,
+            },
+            "github request rate limited",
+          );
+          limitWaits++;
+          await sleep(limitWaitMs);
+          continue;
+        }
         logger.debug(
           {
             route,

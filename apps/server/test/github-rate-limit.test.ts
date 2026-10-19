@@ -361,6 +361,83 @@ describe("waiting for a reported limit", () => {
   });
 });
 
+describe("waiting for a limited GraphQL answer", () => {
+  const GRAPHQL = `${FAKE_API_URL}/graphql`;
+  const limited = {
+    data: null,
+    errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+  };
+  const openIssuesPage = () =>
+    client.graphql(INSTALLATION_ID, queries.openIssuesPage, {
+      owner: "octocat",
+      name: "repo-1",
+    });
+
+  /** Answers GraphQL with `answers` in turn, then with the real fake. */
+  function answerGraphql(answers: (() => Response)[]) {
+    let calls = 0;
+    fake.server.use(http.post(GRAPHQL, () => answers[calls++]?.()));
+    return () => calls;
+  }
+
+  it("waits until x-ratelimit-reset after RATE_LIMITED, then retries", async () => {
+    const calls = answerGraphql([
+      () =>
+        HttpResponse.json(limited, {
+          headers: {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(NOW / 1000 + 42),
+          },
+        }),
+    ]);
+    await openIssuesPage();
+    expect(sleeps).toEqual([42_000]);
+    expect(calls()).toBe(2);
+  });
+
+  it("falls back to rateLimit.resetAt in the body", async () => {
+    answerGraphql([
+      () =>
+        HttpResponse.json({
+          ...limited,
+          data: {
+            rateLimit: {
+              remaining: 0,
+              resetAt: new Date(NOW + 9_000).toISOString(),
+            },
+          },
+        }),
+    ]);
+    await openIssuesPage();
+    expect(sleeps).toEqual([9_000]);
+  });
+
+  it("gives up after waiting three times", async () => {
+    const answer = () =>
+      HttpResponse.json(limited, {
+        headers: { "x-ratelimit-reset": String(NOW / 1000 + 2) },
+      });
+    const calls = answerGraphql(Array.from({ length: 5 }, () => answer));
+    await expect(openIssuesPage()).rejects.toMatchObject({
+      code: "RATE_LIMITED",
+    });
+    expect(sleeps).toEqual([2_000, 2_000, 2_000]);
+    expect(calls()).toBe(4);
+  });
+
+  it("does not wait after another GraphQL error", async () => {
+    const calls = answerGraphql([
+      () =>
+        HttpResponse.json({
+          errors: [{ type: "NOT_FOUND", message: "Could not resolve" }],
+        }),
+    ]);
+    await expect(openIssuesPage()).rejects.toBeInstanceOf(GithubError);
+    expect(sleeps).toEqual([]);
+    expect(calls()).toBe(1);
+  });
+});
+
 describe("retrying other failures", () => {
   it("backs off 1 s, 4 s and 16 s, then throws", async () => {
     const seen = answer(Array.from({ length: 5 }, () => ({ status: 500 })));
