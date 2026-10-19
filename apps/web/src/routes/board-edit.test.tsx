@@ -558,9 +558,13 @@ describe("exporting a board", () => {
       Object.assign(URL, { createObjectURL, revokeObjectURL }),
     );
     const clicked: { download: string; href: string }[] = [];
+    let revokedInClickTask: number | undefined;
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
       function click(this: HTMLAnchorElement) {
         clicked.push({ download: this.download, href: this.href });
+        queueMicrotask(() => {
+          revokedInClickTask = revokeObjectURL.mock.calls.length;
+        });
       },
     );
     renderApp("/b/7/edit");
@@ -574,7 +578,10 @@ describe("exporting a board", () => {
       download: "Sprint.crossboard.json",
       href: "blob:board",
     });
-    expect(revokeObjectURL).toHaveBeenCalledWith("blob:board");
+    expect(revokedInClickTask).toBe(0);
+    await waitFor(() =>
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:board"),
+    );
   });
 
   it("shows a toast when the export fails", async () => {

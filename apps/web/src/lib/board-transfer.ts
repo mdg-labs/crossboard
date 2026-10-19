@@ -58,7 +58,11 @@ export async function downloadBoard(
     link.click();
     link.remove();
   } finally {
-    URL.revokeObjectURL(url);
+    // Some browsers start the download after click() returns and fail it
+    // when the URL is already revoked, so the revoke waits for the next task.
+    setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 0);
   }
 }
 
