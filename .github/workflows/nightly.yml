@@ -14,8 +14,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to main cancels a still-running publish, so `nightly` never
-# moves back to an older commit.
+# A newer push to main cancels a still-running publish. A re-run of an older
+# run enters the group after the newer one has finished and keeps its old
+# GITHUB_SHA, so the push step also compares that SHA with the tip of `main`
+# and moves `nightly` only when they match: it never moves back to an older
+# commit.
 concurrency:
   group: nightly
   cancel-in-progress: true
@@ -86,11 +89,25 @@ jobs:
           echo "DOCKER_CONFIG=${config}" >> "$GITHUB_ENV"
           printf '%s' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$config" docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
 
+      # The read fails the step when the API call fails or returns nothing, so
+      # an unknown tip never counts as fresh.
       - name: Push the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           short_sha="${GITHUB_SHA::7}"
           docker push "${IMAGE}:${short_sha}"
-          docker push "${IMAGE}:nightly"
+          main_tip="$(gh api "repos/${REPOSITORY}/branches/main" --jq .commit.sha)"
+          if [ -z "$main_tip" ]; then
+            echo "::error::Could not read the tip of main"
+            exit 1
+          fi
+          if [ "$main_tip" = "$GITHUB_SHA" ]; then
+            docker push "${IMAGE}:nightly"
+          else
+            echo "::notice::Skipping ${IMAGE}:nightly: ${GITHUB_SHA} is not the tip of main (${main_tip})"
+          fi
 
       - name: Clean up
         if: always()
