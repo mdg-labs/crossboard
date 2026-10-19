@@ -220,6 +220,84 @@ describe("process entry", () => {
     expect(output.join("")).toContain('"msg":"listening"');
   });
 
+  it("serves an issue's details through the installation client the sync uses", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const { db } = entry.database;
+    db.insert(schema.installations)
+      .values({
+        id: 1,
+        accountLogin: "octocat",
+        accountId: 1,
+        accountType: "User",
+        suspended: false,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    const user = addUser(db, "octocat");
+    db.insert(schema.userInstallations)
+      .values({ userId: user.id, installationId: 1, computedAt: 1 })
+      .run();
+    db.insert(schema.repos)
+      .values({
+        id: "R_1",
+        databaseId: 1,
+        installationId: 1,
+        owner: "octocat",
+        name: "repo-1",
+        private: true,
+        syncState: "ready",
+        openIssueCount: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    db.insert(schema.userRepoAccess)
+      .values({ userId: user.id, repoId: "R_1", computedAt: 1 })
+      .run();
+    db.insert(schema.issues)
+      .values({
+        id: "I_1",
+        databaseId: 1,
+        repoId: "R_1",
+        number: 1,
+        title: "Issue 1",
+        url: "https://github.com/octocat/repo-1/issues/1",
+        authorLogin: "octocat",
+        typeName: null,
+        typeColor: null,
+        milestoneTitle: null,
+        milestoneUrl: null,
+        parentId: null,
+        subTotal: 0,
+        subCompleted: 0,
+        blockedByTotal: 0,
+        blockingTotal: 0,
+        createdAt: 1000,
+        updatedAt: 1000,
+        syncedAt: 1,
+      })
+      .run();
+    const graphql = vi.spyOn(entry.installations, "graphql").mockResolvedValue({
+      rateLimit: { cost: 1, remaining: 4900, limit: 5000, resetAt: null },
+      node: {
+        bodyHTML: "<p>the body</p>",
+        comments: { totalCount: 0, nodes: [] },
+        subIssues: { totalCount: 0, nodes: [] },
+      },
+    });
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/issues/octocat/repo-1/1/details`,
+      { headers: { Cookie: signIn(db, user.id).cookie } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(graphql.mock.calls[0]?.[0]).toBe(1);
+  });
+
   it("answers unknown /api routes in the error shape through the listener", async () => {
     stubEnv({ ...validEnv, ...githubEnv });
     const entry = await start();

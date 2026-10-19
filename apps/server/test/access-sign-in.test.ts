@@ -30,7 +30,7 @@ import {
   FAKE_API_URL,
   FAKE_WEB_URL,
 } from "./github-fake.js";
-import { validEnv } from "./helpers.js";
+import { validEnv, unusedInstallations } from "./helpers.js";
 import { createTestAccess } from "./sign-in.js";
 
 const people = {
@@ -133,6 +133,7 @@ function build() {
     logger,
     db: database.db,
     github,
+    installations: unusedInstallations,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,

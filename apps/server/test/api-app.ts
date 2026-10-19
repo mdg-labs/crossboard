@@ -7,7 +7,7 @@ import { schema } from "../src/db/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
 import type { TestDatabase } from "./database.js";
-import { githubEnv, validEnv } from "./helpers.js";
+import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
 import { createTestAccess } from "./sign-in.js";
 
 /** The origin the CSRF guard of SPEC §9.3 accepts on a state-changing request. */
@@ -40,6 +40,7 @@ export function buildApiApp(database: TestDatabase, dir: string) {
     logger,
     db: database.db,
     github,
+    installations: unusedInstallations,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,

@@ -1,3 +1,5 @@
+import type { InstallationClient } from "../src/github/index.js";
+
 export const SENTINEL = "sentinel-secret-value-7f3a9c1e5d2b4a68";
 
 export const validEnv = {
@@ -30,3 +32,16 @@ export async function freePort(): Promise<number> {
     });
   });
 }
+
+/**
+ * An installation client for apps whose routes under test never call GitHub as
+ * an installation; a call fails the test.
+ */
+export const unusedInstallations: Pick<
+  InstallationClient,
+  "budgets" | "graphql"
+> = {
+  budgets: { get: () => ({ rest: null, graphql: null }) },
+  graphql: () =>
+    Promise.reject(new Error("the test did not expect an installation call")),
+};

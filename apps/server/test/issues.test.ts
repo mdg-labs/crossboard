@@ -14,7 +14,7 @@ import { schema } from "../src/db/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
-import { githubEnv, validEnv } from "./helpers.js";
+import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
 import { addUser, createTestAccess, signIn } from "./sign-in.js";
 
 let dir: string;
@@ -61,6 +61,7 @@ function build() {
     logger,
     db: database.db,
     github,
+    installations: unusedInstallations,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,

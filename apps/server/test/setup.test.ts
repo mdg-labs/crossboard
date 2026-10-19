@@ -16,7 +16,7 @@ import { createLogger } from "../src/logger.js";
 import { encrypt } from "../src/security/index.js";
 import { Hono } from "hono";
 import { createTestDatabase, type TestDatabase } from "./database.js";
-import { githubEnv, validEnv } from "./helpers.js";
+import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
 import { signIn, createTestAccess } from "./sign-in.js";
 
 let dir: string;
@@ -57,6 +57,7 @@ function build(env: Record<string, string> = validEnv) {
     logger,
     db: database.db,
     github,
+    installations: unusedInstallations,
     version: "1.0.0",
     webRoot,
     setup,

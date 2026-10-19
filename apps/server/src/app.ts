@@ -18,11 +18,7 @@ import {
   requirePageSession,
 } from "./auth/sessions/index.js";
 import type { Db } from "./db/index.js";
-import {
-  createInstallationClient,
-  type GithubClient,
-  type InstallationClient,
-} from "./github/index.js";
+import type { GithubClient, InstallationClient } from "./github/index.js";
 import { createIssueDetails } from "./issues/index.js";
 import {
   contentSecurityPolicy,
@@ -39,23 +35,15 @@ export interface AppOptions {
   access: Access;
   appSecret: string;
   publicUrl: string;
-  /**
-   * What the routes that read GitHub data call as an installation; one built
-   * from `github` and the setup credentials when omitted.
-   */
-  installations?: Pick<InstallationClient, "budgets" | "graphql">;
+  /** What the routes that read GitHub data call as an installation. */
+  installations: Pick<InstallationClient, "budgets" | "graphql">;
 }
 
 export function createApp(options: AppOptions) {
   const sessionOptions = { db: options.db, publicUrl: options.publicUrl };
   const details = createIssueDetails({
     db: options.db,
-    installations:
-      options.installations ??
-      createInstallationClient({
-        github: options.github,
-        credentials: () => options.setup.credentials(),
-      }),
+    installations: options.installations,
     isActive: (installationId) =>
       activeInstallationIds(options.db, options.setup.allowlist).has(
         installationId,

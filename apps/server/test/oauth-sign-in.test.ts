@@ -28,7 +28,7 @@ import {
   FAKE_WEB_URL,
   fakeUser,
 } from "./github-fake.js";
-import { SENTINEL, validEnv } from "./helpers.js";
+import { SENTINEL, validEnv, unusedInstallations } from "./helpers.js";
 import { createTestAccess } from "./sign-in.js";
 
 const ORIGIN = validEnv.CROSSBOARD_PUBLIC_URL;
@@ -146,6 +146,7 @@ function build(env: Record<string, string> = {}) {
     logger,
     db: database.db,
     github,
+    installations: unusedInstallations,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,
