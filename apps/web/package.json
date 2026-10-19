@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
+    "@crossboard/query": "workspace:*",
     "@daypicker/react": "^10.0.2",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "@fontsource-variable/inter": "^5.3.0",

@@ -44,6 +44,10 @@ ENV NODE_ENV=production \
 # apps/server and apps/web layout is kept.
 COPY --from=prod-deps /app/node_modules node_modules
 COPY --from=prod-deps /app/apps/server/node_modules apps/server/node_modules
+# apps/server/node_modules/@crossboard/query links to packages/query, so the
+# compiled package is kept at that path; src/ is not needed at runtime.
+COPY --from=build /app/packages/query/package.json packages/query/package.json
+COPY --from=build /app/packages/query/dist packages/query/dist
 COPY --from=build /app/apps/server/package.json apps/server/package.json
 COPY --from=build /app/apps/server/dist apps/server/dist
 COPY --from=build /app/apps/web/dist apps/web/dist

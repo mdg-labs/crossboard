@@ -12,7 +12,7 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "build": "tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('src/db/migrations', 'dist/db/migrations', { recursive: true })\"",
+    "build": "pnpm --filter @crossboard/query build && tsc -p tsconfig.build.json && node -e \"require('node:fs').cpSync('src/db/migrations', 'dist/db/migrations', { recursive: true })\"",
     "db:generate": "drizzle-kit generate",
     "db:check": "drizzle-kit check"
   },
@@ -26,6 +26,7 @@
     "vitest": "^5.0.5"
   },
   "dependencies": {
+    "@crossboard/query": "workspace:*",
     "@hono/node-server": "^2.1.5",
     "@hono/zod-validator": "^0.9.1",
     "better-sqlite3": "^13.0.3",
