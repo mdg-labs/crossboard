@@ -3,7 +3,13 @@ import { and, asc, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { SessionEnv } from "../auth/sessions/index.js";
+import {
+  boardCardsQuerySchema,
+  composeBoardCards,
+  parseFilter,
+} from "../boards/index.js";
 import { schema, type Db } from "../db/index.js";
+import { loadAccessibleIssues } from "../issues/index.js";
 import { errorResponse, invalidQueryResponse } from "./errors.js";
 import { boardCreateSchema, boardPatchSchema, type Board } from "./schemas.js";
 import { validate } from "./validator.js";
@@ -101,6 +107,8 @@ const columnRows = (boardIdValue: number, columns: ColumnInput[]) =>
 /**
  * `GET`, `POST /api/boards` and `GET`, `PATCH`, `DELETE /api/boards/:id` (SPEC
  * FR-28, FR-29, FR-35, §7.4): the session user's boards with their columns.
+ * `GET /api/boards/:id/cards?q=` places the user's accessible issues in the
+ * board's columns (FR-30, FR-31, FR-33, FR-34).
  * Every statement carries the session user, so another user's board id is a
  * `404` on every route (D-2). A board and its columns change in one
  * transaction, so a failed write leaves the board as it was.
@@ -182,6 +190,58 @@ export function createBoardRoutes({ db }: BoardsOptions) {
       const id = boardId(c.req.param("id"));
       const board = id === null ? null : load(userId, id);
       return board === null ? boardNotFound(c) : c.json(board);
+    })
+    .get("/boards/:id/cards", validate("query", boardCardsQuerySchema), (c) => {
+      const { userId } = c.var.session;
+      const id = boardId(c.req.param("id"));
+      const board = id === null ? null : load(userId, id);
+      if (board === null) {
+        return boardNotFound(c);
+      }
+      const user = db
+        .select({ login: schema.users.login })
+        .from(schema.users)
+        .where(eq(schema.users.id, userId))
+        .get();
+      if (user === undefined) {
+        return errorResponse(
+          c,
+          401,
+          "unauthorized",
+          "Sign in to use this instance",
+        );
+      }
+
+      const adHoc = parseFilter(c.req.valid("query").q);
+      if ("error" in adHoc) {
+        return invalidQueryResponse(c, adHoc.error);
+      }
+      const base = parseFilter(board.baseFilter);
+      if ("error" in base) {
+        return invalidQueryResponse(c, base.error, {
+          label: "Base filter",
+          field: "baseFilter",
+        });
+      }
+      const columns = [];
+      for (const [index, column] of board.columns.entries()) {
+        const parsed = parseFilter(column.filter);
+        if ("error" in parsed) {
+          return invalidQueryResponse(c, parsed.error, {
+            label: `Column ${String(index + 1)} "${column.name}"`,
+            field: `columns.${String(index)}.filter`,
+          });
+        }
+        columns.push(parsed.ast);
+      }
+
+      const cards = composeBoardCards(
+        board,
+        { base: base.ast, adHoc: adHoc.ast, columns },
+        loadAccessibleIssues(db, userId),
+        user.login,
+      );
+      return c.json({ ...cards, warnings: adHoc.warnings });
     })
     .patch("/boards/:id", validate("json", boardPatchSchema), (c) => {
       const { userId } = c.var.session;
