@@ -91,25 +91,31 @@ export async function startContainer({
     );
   };
 
-  await docker(
-    "docker",
-    [
-      "run",
-      "--detach",
-      "--rm",
-      "--name",
-      name,
-      "--network",
-      "host",
-      ...Object.entries(plain).flatMap(([key, value]) => [
-        "--env",
-        `${key}=${value}`,
-      ]),
-      ...Object.keys(secrets).flatMap((key) => ["--env", key]),
-      image,
-    ],
-    { env: { ...process.env, ...secrets } },
-  );
+  // No `--rm`: a container that exits at startup must stay so its logs can be
+  // read; `stop()` is the only cleanup and every path below ends in it.
+  try {
+    await docker(
+      "docker",
+      [
+        "run",
+        "--detach",
+        "--name",
+        name,
+        "--network",
+        "host",
+        ...Object.entries(plain).flatMap(([key, value]) => [
+          "--env",
+          `${key}=${value}`,
+        ]),
+        ...Object.keys(secrets).flatMap((key) => ["--env", key]),
+        image,
+      ],
+      { env: { ...process.env, ...secrets } },
+    );
+  } catch (error) {
+    await stop();
+    throw error;
+  }
 
   const deadline = Date.now() + 60_000;
   for (;;) {
