@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "@fontsource-variable/inter";
 @import "@fontsource-variable/geist-mono";
+@import "github-markdown-css/github-markdown.css";
 
 @custom-variant dark (@media (prefers-color-scheme: dark));
 
@@ -289,4 +290,29 @@
 
 .base-ui-disable-scrollbar::-webkit-scrollbar {
   display: none;
+}
+
+.markdown-body {
+  background-color: transparent;
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * The detail Drawer is non-modal (SPEC D-22): the list behind it keeps its
+ * pointer, so the viewport that spans the screen lets clicks through and
+ * only the panel catches them.
+ */
+[data-slot="drawer-viewport"]:has([data-detail-panel]) {
+  pointer-events: none;
+}
+
+[data-slot="drawer-backdrop"]:has(
+  + [data-slot="drawer-viewport"] [data-detail-panel]
+) {
+  display: none;
+}
+
+[data-detail-panel] {
+  pointer-events: auto;
 }

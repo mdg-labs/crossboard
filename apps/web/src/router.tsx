@@ -9,6 +9,7 @@ import {
 import { TopBar } from "@/components/top-bar/top-bar";
 import { parseIndexSearch } from "@/lib/issues";
 import { IndexRoute } from "@/routes/index";
+import { IssueRoute } from "@/routes/issue";
 import { NotAllowedRoute } from "@/routes/not-allowed";
 import { SettingsRoute } from "@/routes/settings";
 import { SetupRoute } from "@/routes/setup";
@@ -45,6 +46,12 @@ const indexRoute = createRoute({
   component: IndexRoute,
 });
 
+const issueRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/i/$owner/$repo/$number",
+  component: IssueRoute,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings",
@@ -64,7 +71,7 @@ const notAllowedRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([indexRoute, settingsRoute]),
+  shellRoute.addChildren([indexRoute, issueRoute, settingsRoute]),
   setupRoute,
   notAllowedRoute,
 ]);

@@ -23,9 +23,12 @@ export function IssueRow({
   issue,
   selected,
   onFilter,
+  onOpen,
 }: {
   issue: IssueItem;
   selected: boolean;
+  /** Opens the issue's detail (SPEC FR-39). */
+  onOpen: (issue: IssueItem) => void;
   /** Adds a qualifier to the filter (SPEC FR-15). */
   onFilter: (qualifier: string) => void;
 }): React.ReactElement {
@@ -36,8 +39,16 @@ export function IssueRow({
   return (
     <TableRow
       aria-current={selected ? "true" : undefined}
-      className="[&>td]:h-11 [&>td]:border-b [&>td]:py-0"
+      className="cursor-pointer [&>td]:h-11 [&>td]:border-b [&>td]:py-0"
       data-issue-id={issue.id}
+      onClick={(event) => {
+        if (
+          event.target instanceof Element &&
+          event.target.closest("a, button") === null
+        ) {
+          onOpen(issue);
+        }
+      }}
       data-state={selected ? "selected" : undefined}
     >
       <TableCell className="truncate">

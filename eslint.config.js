@@ -59,6 +59,27 @@ export default defineConfig(
   {
     files: ["apps/web/**/*.{ts,tsx}"],
     languageOptions: { globals: globals.browser },
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "JSXAttribute[name.name='dangerouslySetInnerHTML'], Property[key.name='dangerouslySetInnerHTML'], Property[key.value='dangerouslySetInnerHTML']",
+          message:
+            "Inject HTML only in components/detail/markdown-body.tsx, with sanitized HTML from the details route.",
+        },
+        {
+          selector:
+            "AssignmentExpression[left.property.name=/^(innerHTML|outerHTML)$/]",
+          message:
+            "Inject HTML only in components/detail/markdown-body.tsx, with sanitized HTML from the details route.",
+        },
+      ],
+    },
+  },
+  {
+    files: ["apps/web/src/components/detail/markdown-body.tsx"],
+    rules: { "no-restricted-syntax": "off" },
   },
   {
     files: ["apps/server/**/*.ts"],

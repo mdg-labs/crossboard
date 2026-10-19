@@ -1,0 +1,108 @@
+{
+  "answerBy": ["id"],
+  "answers": {
+    "I_e2e_hw_1": {
+      "data": {
+        "rateLimit": {
+          "cost": 1,
+          "remaining": 4990,
+          "limit": 5000,
+          "resetAt": "2030-01-01T00:00:00Z"
+        },
+        "node": {
+          "bodyHTML": "<p>The greeting banner overflows below <strong>320px</strong>.</p>",
+          "comments": {
+            "totalCount": 0,
+            "nodes": []
+          },
+          "subIssues": {
+            "totalCount": 0,
+            "nodes": []
+          }
+        }
+      }
+    },
+    "I_e2e_rk_1": {
+      "data": {
+        "rateLimit": {
+          "cost": 1,
+          "remaining": 4990,
+          "limit": 5000,
+          "resetAt": "2030-01-01T00:00:00Z"
+        },
+        "node": {
+          "bodyHTML": "<p>The gauge shows <em>empty</em> right after launch.</p><script>window.__pwned = true</script><p><a href=\"https://github.com/octocat\" onclick=\"window.__pwned = true\">octocat</a> saw it too.</p>",
+          "comments": {
+            "totalCount": 2,
+            "nodes": [
+              {
+                "url": "https://github.com/acme/rocket/issues/1#issuecomment-1",
+                "createdAt": "2026-10-06T09:00:00Z",
+                "author": {
+                  "login": "octocat",
+                  "avatarUrl": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23888'/%3E%3C/svg%3E"
+                },
+                "bodyHTML": "<p>Reproduced on the second launch.</p>"
+              },
+              {
+                "url": "https://github.com/acme/rocket/issues/1#issuecomment-2",
+                "createdAt": "2026-10-07T09:00:00Z",
+                "author": {
+                  "login": "hubot",
+                  "avatarUrl": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='4'%3E%3Crect width='4' height='4' fill='%23888'/%3E%3C/svg%3E"
+                },
+                "bodyHTML": "<p>Likely the fuel line.</p>"
+              }
+            ]
+          },
+          "subIssues": {
+            "totalCount": 0,
+            "nodes": []
+          }
+        }
+      }
+    },
+    "I_e2e_rk_2": {
+      "data": {
+        "rateLimit": {
+          "cost": 1,
+          "remaining": 4990,
+          "limit": 5000,
+          "resetAt": "2030-01-01T00:00:00Z"
+        },
+        "node": {
+          "bodyHTML": "<p>Swap the cracked fuel line.</p>",
+          "comments": {
+            "totalCount": 0,
+            "nodes": []
+          },
+          "subIssues": {
+            "totalCount": 2,
+            "nodes": [
+              {
+                "id": "I_e2e_sub_1",
+                "number": 7,
+                "title": "Measure the old line",
+                "state": "CLOSED",
+                "url": "https://github.com/acme/rocket/issues/7",
+                "repository": {
+                  "nameWithOwner": "acme/rocket"
+                }
+              },
+              {
+                "id": "I_e2e_sub_2",
+                "number": 8,
+                "title": "Fit the new line",
+                "state": "OPEN",
+                "url": "https://github.com/acme/rocket/issues/8",
+                "repository": {
+                  "nameWithOwner": "acme/rocket"
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
