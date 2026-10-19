@@ -33,7 +33,6 @@ jobs:
       PW_IMAGE: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:7852dc5a7d72f5fe458a597d690f6c42fbc8e9e26ddfa95f8e6ef552558d9bbf
       PW_VERSION: 1.64.1
       PW_CONTAINER: crossboard-pw-${{ github.run_id }}-${{ github.run_attempt }}
-      PW_PORT: "39271"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,17 +62,21 @@ jobs:
       # reaches the app container and the fake GitHub on the runner's loopback
       # interface exactly as a host browser would. The container gets no Docker
       # socket, no secret and no extra privilege, and runs as the image's
-      # unprivileged user. It is ready once `run-server` has logged that it is
-      # listening; a container that exits first (for example because the port is
-      # taken) fails the job.
+      # unprivileged user. `run-server` binds a port the OS picks (`--port 0`),
+      # because runs that overlap on this host share its loopback interface; the
+      # step reads the bound endpoint from the line `run-server` logs once it is
+      # listening and hands it to the next steps. A container that exits first
+      # fails the job.
       - name: Start the Playwright browser server
         run: |
           docker run --detach --name "$PW_CONTAINER" --network host --init \
             --user pwuser --workdir /home/pwuser "$PW_IMAGE" \
             npx --yes "playwright@$PW_VERSION" run-server \
-            --host 127.0.0.1 --port "$PW_PORT"
+            --host 127.0.0.1 --port 0
           deadline=$((SECONDS + 120))
-          until [[ "$(docker logs "$PW_CONTAINER" 2>&1)" == *"Listening on"* ]]; do
+          while true; do
+            endpoint="$(docker logs "$PW_CONTAINER" 2>&1 | sed -n 's|^Listening on \(ws://127\.0\.0\.1:[0-9][0-9]*/\)$|\1|p' | head -n 1)"
+            [[ -n "$endpoint" ]] && break
             if [[ "$(docker inspect --format '{{.State.Running}}' "$PW_CONTAINER")" != true ]] || (( SECONDS > deadline )); then
               docker logs "$PW_CONTAINER" || true
               echo "::error::the Playwright browser server did not come up"
@@ -81,6 +84,7 @@ jobs:
             fi
             sleep 2
           done
+          echo "PW_WS_ENDPOINT=$endpoint" >> "$GITHUB_ENV"
 
       # Runs the built image against a fake GitHub on the runner's loopback
       # interface (the container shares the host network); nothing here talks
@@ -88,7 +92,7 @@ jobs:
       - name: End-to-end tests
         env:
           CROSSBOARD_E2E_IMAGE: ${{ env.IMAGE }}
-          PW_TEST_CONNECT_WS_ENDPOINT: ws://127.0.0.1:${{ env.PW_PORT }}/
+          PW_TEST_CONNECT_WS_ENDPOINT: ${{ env.PW_WS_ENDPOINT }}
         run: pnpm --filter ./e2e test:e2e
 
       - name: Remove the Playwright browser container
