@@ -1,5 +1,6 @@
 import { QuerySyntaxError, tokenize, type Token } from "./lexer.js";
-import type { Node, ParseResult, Span } from "./types.js";
+import { resolveQualifier } from "./qualifiers.js";
+import type { Node, ParseResult, QueryWarning, Span } from "./types.js";
 
 export const MAX_OPEN_PARENTHESES = 5;
 
@@ -22,7 +23,10 @@ class Parser {
   private position = 0;
   private open = 0;
 
-  constructor(private readonly tokens: Token[]) {}
+  constructor(
+    private readonly tokens: Token[],
+    private readonly warnings: QueryWarning[],
+  ) {}
 
   parse(): Node {
     if (this.tokens.length === 0) {
@@ -118,6 +122,15 @@ class Parser {
   private parseUnary(): Node {
     const token = this.next() as Operand;
     if (token.kind === "text") {
+      const issueNumber = /^#([0-9]+)$/.exec(token.value);
+      if (issueNumber && !token.quoted) {
+        return {
+          type: "number",
+          number: Number(issueNumber[1]),
+          start: token.start,
+          end: token.end,
+        };
+      }
       return {
         type: "text",
         value: token.value,
@@ -126,14 +139,7 @@ class Parser {
       };
     }
     if (token.kind === "qualifier") {
-      return {
-        type: "qualifier",
-        name: token.name,
-        negated: token.negated,
-        values: token.values.map((element) => element.value),
-        start: token.start,
-        end: token.end,
-      };
+      return resolveQualifier(token, this.warnings);
     }
     return this.parseGroup(token);
   }
@@ -175,8 +181,9 @@ class Parser {
 
 export function parse(query: string): ParseResult {
   try {
-    const ast = new Parser(tokenize(query)).parse();
-    return { ast, warnings: [] };
+    const warnings: QueryWarning[] = [];
+    const ast = new Parser(tokenize(query), warnings).parse();
+    return { ast, warnings };
   } catch (error) {
     if (error instanceof QuerySyntaxError) {
       return { error: error.detail };

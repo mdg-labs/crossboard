@@ -5,7 +5,9 @@ type Shape =
   | { and: Shape[] }
   | { or: Shape[] }
   | { text: string }
-  | { q: string; values: string[]; negated?: true };
+  | { q: string; values: unknown[]; negated?: true }
+  | { number: number }
+  | { ignored: true };
 
 function shape(node: Node): Shape {
   switch (node.type) {
@@ -15,6 +17,10 @@ function shape(node: Node): Shape {
       return { or: node.children.map(shape) };
     case "text":
       return { text: node.value };
+    case "number":
+      return { number: node.number };
+    case "ignored":
+      return { ignored: true };
     case "qualifier":
       return node.negated
         ? { q: node.name, values: node.values, negated: true }
@@ -38,7 +44,7 @@ function error(query: string): QueryError {
   return result.error;
 }
 
-const q = (name: string, ...values: string[]): Shape => ({ q: name, values });
+const q = (name: string, ...values: unknown[]): Shape => ({ q: name, values });
 const t = (text: string): Shape => ({ text });
 
 describe("terms and implicit AND", () => {
@@ -227,8 +233,10 @@ describe("dangling operators", () => {
 describe("qualifiers", () => {
   it("lowercases the qualifier name only", () => {
     expect(ast("LABEL:Bug")).toEqual(q("label", "Bug"));
-    expect(ast("Is:Open")).toEqual(q("is", "Open"));
-    expect(ast("Blocked-By:o/r#1")).toEqual(q("blocked-by", "o/r#1"));
+    expect(ast("Is:Open")).toEqual(q("is", "open"));
+    expect(ast("Blocked-By:o/r#1")).toEqual(
+      q("blocked-by", { owner: "o", repo: "r", number: 1 }),
+    );
   });
 
   it("accepts double-quoted values with spaces", () => {
@@ -255,7 +263,9 @@ describe("qualifiers", () => {
   it("splits a comma list into OR elements", () => {
     expect(ast("label:bug,security")).toEqual(q("label", "bug", "security"));
     expect(ast("assignee:alice,@me")).toEqual(q("assignee", "alice", "@me"));
-    expect(ast("repo:o/a,o/b")).toEqual(q("repo", "o/a", "o/b"));
+    expect(ast("repo:o/a,o/b")).toEqual(
+      q("repo", { owner: "o", name: "a" }, { owner: "o", name: "b" }),
+    );
   });
 
   it("splits a list with quoted elements", () => {
