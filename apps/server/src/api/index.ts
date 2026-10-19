@@ -4,6 +4,7 @@ import type { Db } from "../db/index.js";
 import type { GithubClient } from "../github/index.js";
 import type { IssueDetailsLoader } from "../issues/index.js";
 import { createBoardRoutes } from "./boards.js";
+import { createBoardTransferRoutes } from "./boards-transfer.js";
 import { createDetailRoutes } from "./details.js";
 import { createIssueRoutes } from "./issues.js";
 import { createMeRoutes } from "./me.js";
@@ -29,5 +30,6 @@ export function createApi(options: ApiOptions) {
     .route("/", createDetailRoutes({ details: options.details }))
     .route("/", createSuggestRoutes({ db: options.db }))
     .route("/", createViewRoutes({ db: options.db }))
-    .route("/", createBoardRoutes({ db: options.db }));
+    .route("/", createBoardRoutes({ db: options.db }))
+    .route("/", createBoardTransferRoutes({ db: options.db }));
 }

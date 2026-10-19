@@ -60,6 +60,7 @@ function stubServer(
   initial: SavedView[] | "error" | "pending",
   answers: {
     boards?: Board[] | "error" | "pending";
+    importBoard?: (text: string) => Response;
     post?: (body: Record<string, unknown>) => Response;
     patch?: (id: number, body: Record<string, unknown>) => Response;
     delete?: (id: number) => Response;
@@ -77,6 +78,20 @@ function stubServer(
         typeof init?.body === "string"
           ? (JSON.parse(init.body) as Record<string, unknown>)
           : undefined;
+      if (url.pathname === "/api/boards/import" && method === "POST") {
+        calls.push({
+          method,
+          path: url.pathname,
+          body,
+          contentType: new Headers(init?.headers).get("Content-Type"),
+        });
+        return (
+          answers.importBoard?.(String(init?.body)) ??
+          Response.json(board(41, { name: String(body?.name) }), {
+            status: 201,
+          })
+        );
+      }
       calls.push({
         method,
         path: url.pathname,
@@ -572,5 +587,58 @@ describe("boards in the switcher", () => {
     await waitFor(() =>
       expect(server.calls("GET", "/api/boards").length).toBeGreaterThan(before),
     );
+  });
+
+  it("imports a board file as a new board and opens it", async () => {
+    const server = stubServer([], { boards: [] });
+    const history = renderApp();
+    await openMenu();
+    const file = new File(
+      [JSON.stringify({ crossboard: "board", version: 1, name: "Shared" })],
+      "shared.json",
+      { type: "application/json" },
+    );
+
+    clickItem(/^Import board/);
+    fireEvent.change(screen.getByLabelText("Board file"), {
+      target: { files: [file] },
+    });
+
+    await waitFor(() => expect(history.location.pathname).toBe("/b/41"));
+    expect(server.calls("POST", "/api/boards/import")).toEqual([
+      expect.objectContaining({
+        contentType: "application/json",
+        body: { crossboard: "board", version: 1, name: "Shared" },
+      }),
+    ]);
+  });
+
+  it("shows the server's message in a toast when the import is refused", async () => {
+    stubServer([], {
+      boards: [],
+      importBoard: () =>
+        Response.json(
+          {
+            error: {
+              code: "invalid_request",
+              message: "version: only version 1 is supported",
+            },
+          },
+          { status: 400 },
+        ),
+    });
+    const history = renderApp();
+    await openMenu();
+    const file = new File([JSON.stringify({ version: 2 })], "old.json");
+
+    fireEvent.change(screen.getByLabelText("Board file"), {
+      target: { files: [file] },
+    });
+
+    expect(
+      await screen.findByText("version: only version 1 is supported"),
+    ).toBeTruthy();
+    expect(screen.getByText("Could not import the board")).toBeTruthy();
+    expect(history.location.pathname).toBe("/");
   });
 });

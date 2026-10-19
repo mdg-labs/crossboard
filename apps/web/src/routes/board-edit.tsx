@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "@tanstack/react-router";
 import { ArrowLeftIcon } from "lucide-react";
 import { BoardForm } from "@/components/board-form/board-form";
+import { ExportBoardButton } from "@/components/board-form/export-board-button";
 import {
   draftFromBoard,
   emptyDraft,
@@ -17,9 +18,11 @@ const notFound = (error: Error): boolean =>
 
 function Page({
   title,
+  actions = null,
   children,
 }: {
   title: string;
+  actions?: React.ReactNode;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -35,7 +38,10 @@ function Page({
         <ArrowLeftIcon aria-hidden="true" />
         All issues
       </Link>
-      <h1 className="font-semibold text-xl">{title}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="font-semibold text-xl">{title}</h1>
+        {actions}
+      </div>
       {children}
     </div>
   );
@@ -112,7 +118,14 @@ export function BoardEditRoute(): React.ReactElement {
     );
   }
   return (
-    <Page title="Edit board">
+    <Page
+      actions={
+        <ExportBoardButton
+          board={{ id: board.data.id, name: board.data.name }}
+        />
+      }
+      title="Edit board"
+    >
       <BoardForm
         board={{ id: board.data.id, name: board.data.name }}
         initial={draftFromBoard(board.data)}

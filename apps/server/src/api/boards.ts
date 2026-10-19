@@ -11,7 +11,12 @@ import {
 import { schema, type Db } from "../db/index.js";
 import { loadAccessibleIssues } from "../issues/index.js";
 import { errorResponse, invalidQueryResponse } from "./errors.js";
-import { boardCreateSchema, boardPatchSchema, type Board } from "./schemas.js";
+import {
+  boardCreateSchema,
+  boardPatchSchema,
+  type Board,
+  type BoardCreate,
+} from "./schemas.js";
 import { validate } from "./validator.js";
 
 const { boards, boardColumns } = schema;
@@ -20,12 +25,12 @@ export interface BoardsOptions {
   db: Db;
 }
 
-interface ColumnInput {
+export interface ColumnInput {
   name: string;
   filter: string;
 }
 
-const boardNotFound = (c: Context) =>
+export const boardNotFound = (c: Context) =>
   errorResponse(c, 404, "not_found", "Not found");
 
 /** A blank filter means the default one, as it does for the list (SPEC FR-11). */
@@ -42,7 +47,7 @@ function invalidFilter(
 }
 
 /** The first filter of a board that does not parse, the base filter first (SPEC FR-29). */
-function invalidBoardFilter(
+export function invalidBoardFilter(
   c: Context,
   baseFilter: string | undefined,
   columns: ColumnInput[] | undefined,
@@ -68,7 +73,7 @@ function invalidBoardFilter(
   return null;
 }
 
-const toBoard = (
+export const toBoard = (
   row: typeof boards.$inferSelect,
   columns: (typeof boardColumns.$inferSelect)[],
 ): Board => ({
@@ -87,7 +92,7 @@ const toBoard = (
 });
 
 /** The id of a path segment that is a positive integer, otherwise `null`. */
-const boardId = (raw: string): number | null =>
+export const boardId = (raw: string): number | null =>
   /^[1-9][0-9]{0,15}$/.test(raw) ? Number(raw) : null;
 
 const byName = (a: Board, b: Board) => {
@@ -104,6 +109,52 @@ const columnRows = (boardIdValue: number, columns: ColumnInput[]) =>
     filter: column.filter.trim(),
   }));
 
+/** The board `id` of `userId` with its columns in order, or `null`. */
+export function loadBoard(db: Db, userId: number, id: number): Board | null {
+  const row = db
+    .select()
+    .from(boards)
+    .where(and(eq(boards.id, id), eq(boards.userId, userId)))
+    .get();
+  if (row === undefined) {
+    return null;
+  }
+  const columns = db
+    .select()
+    .from(boardColumns)
+    .where(eq(boardColumns.boardId, id))
+    .orderBy(asc(boardColumns.position))
+    .all();
+  return toBoard(row, columns);
+}
+
+/** Creates a board and its columns in one transaction; returns the new id. */
+export function insertBoard(
+  db: Db,
+  userId: number,
+  input: BoardCreate,
+): number {
+  const now = Date.now();
+  return db.transaction((tx) => {
+    const row = tx
+      .insert(boards)
+      .values({
+        userId,
+        name: input.name,
+        baseFilter: input.baseFilter.trim(),
+        sort: input.sort,
+        subIssueMode: input.subIssueMode,
+        showOther: input.showOther,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: boards.id })
+      .get();
+    tx.insert(boardColumns).values(columnRows(row.id, input.columns)).run();
+    return row.id;
+  });
+}
+
 /**
  * `GET`, `POST /api/boards` and `GET`, `PATCH`, `DELETE /api/boards/:id` (SPEC
  * FR-28, FR-29, FR-35, §7.4): the session user's boards with their columns.
@@ -114,23 +165,7 @@ const columnRows = (boardIdValue: number, columns: ColumnInput[]) =>
  * transaction, so a failed write leaves the board as it was.
  */
 export function createBoardRoutes({ db }: BoardsOptions) {
-  const load = (userId: number, id: number): Board | null => {
-    const row = db
-      .select()
-      .from(boards)
-      .where(and(eq(boards.id, id), eq(boards.userId, userId)))
-      .get();
-    if (row === undefined) {
-      return null;
-    }
-    const columns = db
-      .select()
-      .from(boardColumns)
-      .where(eq(boardColumns.boardId, id))
-      .orderBy(asc(boardColumns.position))
-      .all();
-    return toBoard(row, columns);
-  };
+  const load = (userId: number, id: number) => loadBoard(db, userId, id);
 
   return new Hono<SessionEnv>()
     .get("/boards", (c) => {
@@ -163,25 +198,7 @@ export function createBoardRoutes({ db }: BoardsOptions) {
       if (problem !== null) {
         return problem;
       }
-      const now = Date.now();
-      const id = db.transaction((tx) => {
-        const row = tx
-          .insert(boards)
-          .values({
-            userId,
-            name: input.name,
-            baseFilter: input.baseFilter.trim(),
-            sort: input.sort,
-            subIssueMode: input.subIssueMode,
-            showOther: input.showOther,
-            createdAt: now,
-            updatedAt: now,
-          })
-          .returning({ id: boards.id })
-          .get();
-        tx.insert(boardColumns).values(columnRows(row.id, input.columns)).run();
-        return row.id;
-      });
+      const id = insertBoard(db, userId, input);
       const board = load(userId, id);
       return board === null ? boardNotFound(c) : c.json(board, 201);
     })

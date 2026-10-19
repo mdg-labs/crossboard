@@ -58,6 +58,7 @@ function stubServer(
     patch?: Answer;
     delete?: Answer;
     boards?: Board[];
+    exportBoard?: Answer;
   } = {},
 ) {
   const boards = options.boards ?? [board()];
@@ -100,6 +101,12 @@ function stubServer(
       if (url.pathname === "/api/boards" && method === "POST") {
         return answer(options.post, () =>
           Response.json(board({ id: 99, ...body }), { status: 201 }),
+        );
+      }
+      const exported = /^\/api\/boards\/(\d+)\/export$/.exec(url.pathname);
+      if (exported !== null && method === "GET") {
+        return answer(options.exportBoard, () =>
+          Response.json({ crossboard: "board", version: 1, name: "Sprint" }),
         );
       }
       const match = /^\/api\/boards\/(\d+)$/.exec(url.pathname);
@@ -538,5 +545,51 @@ describe("/b/:boardId/edit", () => {
     expect(await within(dialog).findByText("Database is locked")).toBeTruthy();
     expect(screen.getByRole("alertdialog")).toBeTruthy();
     expect(history.location.pathname).toBe("/b/7/edit");
+  });
+});
+
+describe("exporting a board", () => {
+  it("downloads the board's file from the edit page", async () => {
+    const server = stubServer();
+    const createObjectURL = vi.fn(() => "blob:board");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal(
+      "URL",
+      Object.assign(URL, { createObjectURL, revokeObjectURL }),
+    );
+    const clicked: { download: string; href: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      function click(this: HTMLAnchorElement) {
+        clicked.push({ download: this.download, href: this.href });
+      },
+    );
+    renderApp("/b/7/edit");
+    await waitFor(() => expect(field("Name")).toBe("Sprint"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+
+    await waitFor(() => expect(clicked).toHaveLength(1));
+    expect(server.calls("GET", "/api/boards/7/export")).toHaveLength(1);
+    expect(clicked[0]).toEqual({
+      download: "Sprint.crossboard.json",
+      href: "blob:board",
+    });
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:board");
+  });
+
+  it("shows a toast when the export fails", async () => {
+    stubServer({
+      exportBoard: Response.json(
+        { error: { code: "not_found", message: "Not found" } },
+        { status: 404 },
+      ),
+    });
+    renderApp("/b/7/edit");
+    await waitFor(() => expect(field("Name")).toBe("Sprint"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+
+    expect(await screen.findByText("Could not export the board")).toBeTruthy();
+    expect(screen.getByText("Not found")).toBeTruthy();
   });
 });

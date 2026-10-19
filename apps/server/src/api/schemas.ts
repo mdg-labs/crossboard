@@ -247,7 +247,7 @@ export const subIssueModeSchema = z.enum(SUB_ISSUE_MODES);
 
 export type SubIssueMode = z.infer<typeof subIssueModeSchema>;
 
-const boardNameSchema = z.string().trim().min(1).max(BOARD_NAME_MAX);
+export const boardNameSchema = z.string().trim().min(1).max(BOARD_NAME_MAX);
 
 const boardColumnInputSchema = z.object({
   name: boardNameSchema,
@@ -290,6 +290,8 @@ export const boardCreateSchema = z.object({
   subIssueMode: subIssueModeSchema.default("collapsed"),
   showOther: z.boolean().default(false),
 });
+
+export type BoardCreate = z.infer<typeof boardCreateSchema>;
 
 /** `columns`, when sent, replaces the board's whole column list in order. */
 export const boardPatchSchema = z
