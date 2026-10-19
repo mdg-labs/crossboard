@@ -3,7 +3,11 @@ import type { Server } from "node:http";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
-import { createAccess, registerAccessJob } from "./access/index.js";
+import {
+  activeInstallationIds,
+  createAccess,
+  registerAccessJob,
+} from "./access/index.js";
 import { createApp } from "./app.js";
 import {
   enqueueSessionCleanupAtStart,
@@ -19,6 +23,11 @@ import {
 } from "./github/index.js";
 import { createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
+import {
+  createDiscovery,
+  enqueueDiscovery,
+  registerDiscoveryJob,
+} from "./sync/discovery.js";
 import { readServerVersion } from "./version.js";
 import type { Logger } from "pino";
 
@@ -84,6 +93,21 @@ export const github = createGithubClient({
 export const setup = createSetup({ db: database.db, config, logger });
 setup.start();
 
+// What the sync jobs and the routes that read GitHub data fetch through.
+export const installations = createInstallationClient({
+  github,
+  credentials: () => setup.credentials(),
+});
+
+export const discovery = createDiscovery({
+  db: database.db,
+  installations,
+  isActive: (installationId) =>
+    activeInstallationIds(database.db, setup.allowlist).has(installationId),
+  logger,
+});
+registerDiscoveryJob(jobs, discovery);
+
 export const access = createAccess({
   db: database.db,
   github,
@@ -96,14 +120,16 @@ export const access = createAccess({
     appSecret: config.appSecret,
     logger,
   }),
+  onActivated: (installationIds) => {
+    for (const id of installationIds) enqueueDiscovery(jobs, id);
+  },
 });
 registerAccessJob(jobs, access, database.db, logger);
 
-// What the sync jobs and the routes that read GitHub data fetch through.
-export const installations = createInstallationClient({
-  github,
-  credentials: () => setup.credentials(),
-});
+// Every active installation is discovered again at startup, ahead of any sync.
+for (const id of activeInstallationIds(database.db, setup.allowlist)) {
+  enqueueDiscovery(jobs, id);
+}
 
 const app = createApp({
   logger,

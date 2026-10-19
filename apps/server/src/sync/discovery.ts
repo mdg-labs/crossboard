@@ -1,0 +1,349 @@
+import { eq, inArray } from "drizzle-orm";
+import type { Logger } from "pino";
+import { z } from "zod";
+import { schema, type Db } from "../db/index.js";
+import type { InstallationClient } from "../github/index.js";
+import { queries } from "../github/queries/index.js";
+import type { Jobs } from "../jobs/index.js";
+
+const { installations, repos } = schema;
+
+export const DISCOVERY_JOB = "sync.discover";
+
+const PAGE_SIZE = 100;
+/** How many repositories one state query covers (SPEC §5.3). */
+export const REPOSITORY_STATES_BATCH = 25;
+const ROUTE = "GET /installation/repositories";
+// An ETag no response carries, so a page that has no stored ETag is fetched
+// through the conditional route and yields the ETag to keep.
+const NO_ETAG = '"crossboard-no-etag"';
+// Keeps one statement under SQLite's bound-parameter limit.
+const CHUNK = 200;
+
+const pageSchema = z.object({
+  repositories: z.array(
+    z.object({
+      id: z.number(),
+      node_id: z.string(),
+      name: z.string(),
+      owner: z.object({ login: z.string() }),
+      private: z.boolean(),
+    }),
+  ),
+});
+
+const statesSchema = z.object({
+  id: z.string(),
+  isArchived: z.boolean(),
+  hasIssuesEnabled: z.boolean(),
+  issues: z.object({ totalCount: z.number() }),
+});
+
+interface Listed {
+  id: number;
+  nodeId: string;
+  owner: string;
+  name: string;
+  private: boolean;
+}
+
+export interface DiscoveryOptions {
+  db: Db;
+  installations: Pick<InstallationClient, "graphql" | "restConditional">;
+  /** Whether the installation is active now (SPEC FR-3). */
+  isActive: (installationId: number) => boolean;
+  logger: Logger;
+  now?: () => number;
+}
+
+export interface Discovery {
+  /**
+   * Lists the installation's repositories (SPEC §5.3), records them, and
+   * decides each new or skipped one's sync state from one batched query per
+   * 25 repos: archived and issues-disabled repos are `skipped` with the
+   * reason, repos without open issues are `ready`, the rest stay `pending`
+   * with their open-issue count. Repos already past `pending` keep their
+   * state; one the response carries no state for is recorded `pending` and
+   * left as it is. Resolves to `skipped` for an installation that is unknown,
+   * suspended or no longer active, checked again before anything is written,
+   * since the GitHub calls can outlast a purge. A GitHub failure, including a
+   * GraphQL error such as `NOT_FOUND` for a repo deleted since the listing,
+   * throws before anything is written.
+   */
+  discover(installationId: number): Promise<"discovered" | "skipped">;
+}
+
+const chunks = <T>(items: readonly T[], size: number): T[][] => {
+  const out: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    out.push(items.slice(index, index + size));
+  }
+  return out;
+};
+
+const isUniqueViolation = (error: unknown): boolean =>
+  error instanceof Error &&
+  (error as { code?: unknown }).code === "SQLITE_CONSTRAINT_UNIQUE";
+
+type Outcome =
+  | { state: "skipped"; detail: string }
+  | { state: "ready" }
+  | { state: "pending"; openIssues: number };
+
+export function createDiscovery({
+  db,
+  installations: github,
+  isActive,
+  logger,
+  now = Date.now,
+}: DiscoveryOptions): Discovery {
+  // The last answer for each page of each installation's list.
+  const pagesSeen = new Map<string, { etag: string; repositories: Listed[] }>();
+
+  async function list(installationId: number): Promise<Listed[]> {
+    const listed: Listed[] = [];
+    for (let page = 1; ; page++) {
+      const key = `${String(installationId)}:${String(page)}`;
+      const seen = pagesSeen.get(key);
+      const answer = await github.restConditional(
+        installationId,
+        ROUTE,
+        seen?.etag ?? NO_ETAG,
+        { per_page: PAGE_SIZE, page },
+      );
+      let repositories: Listed[];
+      if (answer.notModified) {
+        if (seen === undefined) {
+          throw new Error("GitHub answered 304 to a request without an ETag");
+        }
+        repositories = seen.repositories;
+      } else {
+        repositories = pageSchema
+          .parse(answer.data)
+          .repositories.map((entry) => ({
+            id: entry.id,
+            nodeId: entry.node_id,
+            owner: entry.owner.login,
+            name: entry.name,
+            private: entry.private,
+          }));
+        if (answer.etag === null) pagesSeen.delete(key);
+        else pagesSeen.set(key, { etag: answer.etag, repositories });
+      }
+      listed.push(...repositories);
+      if (repositories.length < PAGE_SIZE) return listed;
+    }
+  }
+
+  async function check(
+    installationId: number,
+    candidates: Listed[],
+  ): Promise<Map<string, Outcome>> {
+    const outcomes = new Map<string, Outcome>();
+    for (const batch of chunks(candidates, REPOSITORY_STATES_BATCH)) {
+      const data = z.object({ nodes: z.array(z.unknown()) }).parse(
+        await github.graphql(installationId, queries.repositoryStates, {
+          ids: batch.map((repo) => repo.nodeId),
+        }),
+      );
+      const states = new Map<string, z.infer<typeof statesSchema>>();
+      for (const node of data.nodes) {
+        const parsed = statesSchema.safeParse(node);
+        if (parsed.success) states.set(parsed.data.id, parsed.data);
+      }
+      for (const repo of batch) {
+        const state = states.get(repo.nodeId);
+        if (state === undefined) {
+          logger.warn(
+            { installationId, repo: `${repo.owner}/${repo.name}` },
+            "a repository could not be checked and was not changed",
+          );
+          continue;
+        }
+        outcomes.set(
+          repo.nodeId,
+          state.isArchived
+            ? { state: "skipped", detail: "archived" }
+            : !state.hasIssuesEnabled
+              ? { state: "skipped", detail: "issues disabled" }
+              : state.issues.totalCount === 0
+                ? { state: "ready" }
+                : { state: "pending", openIssues: state.issues.totalCount },
+        );
+      }
+    }
+    return outcomes;
+  }
+
+  return {
+    async discover(installationId) {
+      const installation = db
+        .select()
+        .from(installations)
+        .where(eq(installations.id, installationId))
+        .get();
+      if (
+        installation === undefined ||
+        installation.suspended ||
+        !isActive(installationId)
+      ) {
+        logger.info(
+          { installationId },
+          "repository discovery skipped: the installation is unknown, suspended or not active",
+        );
+        return "skipped";
+      }
+
+      const listed = await list(installationId);
+      const stored = new Map(
+        chunks(listed, CHUNK).flatMap((part) =>
+          db
+            .select({ id: repos.id, syncState: repos.syncState })
+            .from(repos)
+            .where(
+              inArray(
+                repos.id,
+                part.map((repo) => repo.nodeId),
+              ),
+            )
+            .all()
+            .map((row) => [row.id, row.syncState] as const),
+        ),
+      );
+      const outcomes = await check(
+        installationId,
+        listed.filter((repo) => {
+          const state = stored.get(repo.nodeId);
+          return (
+            state === undefined || state === "pending" || state === "skipped"
+          );
+        }),
+      );
+
+      const at = now();
+      const counts = { created: 0, skipped: 0, ready: 0, pending: 0 };
+      const written = db.transaction((tx) => {
+        const current = tx
+          .select({ suspended: installations.suspended })
+          .from(installations)
+          .where(eq(installations.id, installationId))
+          .get();
+        if (
+          current === undefined ||
+          current.suspended ||
+          !isActive(installationId)
+        ) {
+          return false;
+        }
+        for (const repo of listed) {
+          const identity = {
+            installationId,
+            owner: repo.owner,
+            name: repo.name,
+            private: repo.private,
+            updatedAt: at,
+          };
+          const outcome = outcomes.get(repo.nodeId);
+          const fields =
+            outcome === undefined
+              ? {}
+              : outcome.state === "skipped"
+                ? {
+                    syncState: "skipped" as const,
+                    syncDetail: outcome.detail,
+                    openIssueCount: 0,
+                  }
+                : outcome.state === "ready"
+                  ? {
+                      syncState: "ready" as const,
+                      syncDetail: null,
+                      openIssueCount: 0,
+                      lastFullSyncAt: at,
+                      reconcileSince: new Date(at).toISOString(),
+                    }
+                  : {
+                      syncState: "pending" as const,
+                      syncDetail: null,
+                      openIssueCount: outcome.openIssues,
+                    };
+          if (outcome !== undefined) counts[outcome.state]++;
+          if (stored.has(repo.nodeId)) {
+            try {
+              tx.update(repos)
+                .set({ ...identity, ...fields })
+                .where(eq(repos.id, repo.nodeId))
+                .run();
+            } catch (error) {
+              if (!isUniqueViolation(error)) throw error;
+              logger.warn(
+                { installationId, repo: `${repo.owner}/${repo.name}` },
+                "a repository that clashes with a stored repository kept its stored name",
+              );
+              tx.update(repos)
+                .set({
+                  installationId,
+                  private: repo.private,
+                  updatedAt: at,
+                  ...fields,
+                })
+                .where(eq(repos.id, repo.nodeId))
+                .run();
+            }
+          } else {
+            const inserted = tx
+              .insert(repos)
+              .values({
+                id: repo.nodeId,
+                databaseId: repo.id,
+                syncState: "pending",
+                openIssueCount: 0,
+                createdAt: at,
+                ...identity,
+                ...fields,
+              })
+              .onConflictDoNothing()
+              .run();
+            if (inserted.changes === 0) {
+              logger.warn(
+                { installationId, repo: `${repo.owner}/${repo.name}` },
+                "a repository that clashes with a stored repository was left out",
+              );
+            } else counts.created++;
+          }
+        }
+        return true;
+      });
+      if (!written) {
+        logger.info(
+          { installationId },
+          "repository discovery skipped: the installation stopped being active",
+        );
+        return "skipped";
+      }
+      logger.info(
+        { installationId, listed: listed.length, ...counts },
+        "repositories discovered",
+      );
+      return "discovered";
+    },
+  };
+}
+
+/** Enqueues discovery for the installation; one pending job per installation. */
+export function enqueueDiscovery(jobs: Jobs, installationId: number): boolean {
+  return jobs.enqueue(
+    DISCOVERY_JOB,
+    { installationId },
+    { key: String(installationId), installationId },
+  );
+}
+
+/** Registers the job that runs {@link Discovery.discover} for one installation. */
+export function registerDiscoveryJob(jobs: Jobs, discovery: Discovery): void {
+  jobs.register<{ installationId: number }>(
+    DISCOVERY_JOB,
+    async ({ installationId }) => {
+      await discovery.discover(installationId);
+    },
+  );
+}

@@ -10,6 +10,7 @@ import type {
 import type { Allowlist } from "../auth/sign-in/index.js";
 import { GithubError } from "../github/index.js";
 import { activeInstallationIds } from "./active.js";
+import { purgeInstallations } from "./purge.js";
 
 const { installations, repos, userInstallations, userRepoAccess } = schema;
 
@@ -25,6 +26,11 @@ export interface AccessOptions {
   tokens: Pick<UserTokens, "accessToken" | "rejected">;
   allowlist: Allowlist;
   logger: Logger;
+  /**
+   * Called, after the computation is stored, with the installations that
+   * became active through it (SPEC FR-3). Repository discovery hangs off it.
+   */
+  onActivated?: (installationIds: number[]) => void;
   now?: () => number;
 }
 
@@ -44,8 +50,9 @@ export interface Access {
    * their `user_installations` and `user_repo_access` rows. Resolves to
    * `skipped` when the user has no usable token, or when a rejected token had
    * been replaced in the meantime. A GitHub failure throws and leaves the
-   * stored access as it was. The active set (SPEC FR-3) is derived again
-   * afterwards, and the installations it gained or lost are logged.
+   * stored access as it was. The active set (SPEC FR-3) is derived again in
+   * the same transaction: the installations it lost are purged (SPEC §8.2),
+   * and the ones it gained are logged and passed to `onActivated`.
    */
   compute(
     userId: number,
@@ -74,6 +81,7 @@ export function createAccess({
   tokens,
   allowlist,
   logger,
+  onActivated,
   now = Date.now,
 }: AccessOptions): Access {
   async function fetchReached(token: string): Promise<Reached[]> {
@@ -99,8 +107,9 @@ export function createAccess({
     return reached;
   }
 
-  function store(userId: number, reached: Reached[], at: number): number {
+  function store(userId: number, reached: Reached[], at: number) {
     return db.transaction((tx) => {
+      const before = activeInstallationIds(tx, allowlist);
       for (const { installation } of reached) {
         const fields = {
           accountLogin: installation.account.login,
@@ -188,7 +197,15 @@ export function createAccess({
         }
         granted += present.length;
       }
-      return granted;
+      const after = activeInstallationIds(tx, allowlist);
+      const deactivated = [...before].filter((id) => !after.has(id));
+      const purged = purgeInstallations(tx, deactivated);
+      return {
+        granted,
+        purged,
+        activated: [...after].filter((id) => !before.has(id)),
+        deactivated,
+      };
     });
   }
 
@@ -212,11 +229,11 @@ export function createAccess({
         }
         throw error;
       }
-      const before = activeInstallationIds(db, allowlist);
-      const granted = store(userId, reached, now());
-      const after = activeInstallationIds(db, allowlist);
-      const activated = [...after].filter((id) => !before.has(id));
-      const deactivated = [...before].filter((id) => !after.has(id));
+      const { granted, purged, activated, deactivated } = store(
+        userId,
+        reached,
+        now(),
+      );
       logger.info(
         {
           userId,
@@ -224,9 +241,11 @@ export function createAccess({
           repos: granted,
           activated,
           deactivated,
+          purged,
         },
         "user access computed",
       );
+      if (activated.length > 0) onActivated?.(activated);
       return "computed";
     },
   };

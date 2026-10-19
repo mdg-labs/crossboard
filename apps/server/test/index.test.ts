@@ -338,6 +338,137 @@ describe("process entry", () => {
     }
   });
 
+  describe("repository discovery", () => {
+    const discoveryEnv = () => ({
+      ...validEnv,
+      ...githubEnv,
+      GITHUB_APP_ID: APP_ID,
+      GITHUB_PRIVATE_KEY: APP_PRIVATE_KEY,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const repoStates = http.post(`${FAKE_API_URL}/graphql`, () =>
+      HttpResponse.json({
+        data: {
+          rateLimit: {
+            cost: 1,
+            remaining: 4999,
+            resetAt: "2026-01-01T00:00:00Z",
+          },
+          nodes: [
+            {
+              id: "R_1",
+              isArchived: false,
+              hasIssuesEnabled: true,
+              issues: { totalCount: 3 },
+            },
+          ],
+        },
+      }),
+    );
+    const repos = (entry: Awaited<ReturnType<typeof start>>) =>
+      entry.database.sqlite
+        .prepare(
+          "SELECT id, installation_id, sync_state, open_issue_count FROM repos",
+        )
+        .all();
+    const until = async (done: () => boolean) => {
+      const deadline = Date.now() + 5000;
+      while (!done() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    };
+    const installationRow = (id: number, login: string) => ({
+      id,
+      accountLogin: login,
+      accountId: id,
+      accountType: "User" as const,
+      suspended: false,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    it("discovers the repositories of every active installation at startup", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values([
+          installationRow(INSTALLATION_ID, "octocat"),
+          installationRow(8, "stranger"),
+        ])
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(repoStates);
+      try {
+        const entry = await start();
+        await until(() => repos(entry).length > 0);
+        expect(repos(entry)).toEqual([
+          {
+            id: "R_1",
+            installation_id: INSTALLATION_ID,
+            sync_state: "pending",
+            open_issue_count: 3,
+          },
+        ]);
+      } finally {
+        fake.close();
+      }
+    });
+
+    it("discovers an installation when an access computation makes it active", async () => {
+      const seed = openAndMigrate(dataDir);
+      const live = signIn(seed.db, addUser(seed.db, "octocat").id);
+      storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, live.userId, {
+        access: "ghu_octocat",
+      });
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat-org"))
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(
+        repoStates,
+        ...accessHandlers({
+          ghu_octocat: {
+            installations: [{ id: INSTALLATION_ID, login: "octocat-org" }],
+            repos: {
+              [INSTALLATION_ID]: [
+                { id: 1, nodeId: "R_1", owner: "octocat", name: "repo-1" },
+              ],
+            },
+          },
+        }),
+      );
+      try {
+        const entry = await start();
+        expect(repos(entry)).toEqual([]);
+        expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+        await until(
+          () =>
+            repos(entry).length > 0 &&
+            (repos(entry)[0] as { open_issue_count: number })
+              .open_issue_count === 3,
+        );
+        expect(repos(entry)).toEqual([
+          {
+            id: "R_1",
+            installation_id: INSTALLATION_ID,
+            sync_state: "pending",
+            open_issue_count: 3,
+          },
+        ]);
+      } finally {
+        fake.close();
+      }
+    });
+  });
+
   it("gates a fresh instance behind the setup token it logs at start", async () => {
     stubEnv(validEnv);
     await start();

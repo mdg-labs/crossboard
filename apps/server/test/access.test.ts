@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import type { SQLiteTable } from "drizzle-orm/sqlite-core";
 import { http, HttpResponse } from "msw";
 import {
   afterAll,
@@ -79,6 +80,7 @@ const repo = (
 function build(
   allowlist = { users: ["alice", "bob"], orgs: [] as string[] },
   now?: () => number,
+  onActivated?: (installationIds: number[]) => void,
 ) {
   const logger = createLogger("trace", {
     write: (chunk) => logs.push(JSON.parse(chunk)),
@@ -110,6 +112,7 @@ function build(
     tokens,
     allowlist,
     logger,
+    ...(onActivated === undefined ? {} : { onActivated }),
     ...(now === undefined ? {} : { now }),
   });
   return { access, tokens, logger, github };
@@ -619,6 +622,279 @@ describe("the active installations", () => {
           JSON.stringify(entry.deactivated) === "[5]",
       ),
     ).toBe(true);
+  });
+});
+
+describe("an installation that becomes or stops being active", () => {
+  const allowlist = { users: ["alice", "bob"], orgs: [] as string[] };
+  const org = (id: number) => ({
+    id,
+    login: `org-${String(id)}`,
+    type: "Organization" as const,
+  });
+
+  function seedData(repoId: string) {
+    const owner = repoId;
+    for (const [id, number] of [
+      [`I_${owner}_1`, 1],
+      [`I_${owner}_2`, 2],
+    ] as const) {
+      database.db
+        .insert(schema.issues)
+        .values({
+          id,
+          databaseId: number,
+          repoId,
+          number,
+          title: `issue ${String(number)}`,
+          url: "https://github.test/x",
+          subTotal: 0,
+          subCompleted: 0,
+          blockedByTotal: 0,
+          blockingTotal: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          syncedAt: 1,
+        })
+        .run();
+    }
+    database.db
+      .insert(schema.labels)
+      .values({ id: `L_${owner}`, repoId, name: "bug", color: "d73a4a" })
+      .run();
+    database.db
+      .insert(schema.issueLabels)
+      .values({ issueId: `I_${owner}_1`, labelId: `L_${owner}` })
+      .run();
+    database.db
+      .insert(schema.issueAssignees)
+      .values({ issueId: `I_${owner}_1`, login: "x", avatarUrl: "u" })
+      .run();
+    database.db
+      .insert(schema.issueDeps)
+      .values([
+        { blockedId: `I_${owner}_1`, blockingId: "I_elsewhere" },
+        { blockedId: "I_elsewhere", blockingId: `I_${owner}_1` },
+      ])
+      .run();
+  }
+
+  const count = (table: SQLiteTable) =>
+    database.db.select().from(table).all().length;
+
+  it("purges the repos of an installation nobody allowed reaches any more, and only those", async () => {
+    const { access } = build(allowlist);
+    const alice = userWithToken("alice", ALICE);
+    const bob = userWithToken("bob", BOB);
+    worlds[ALICE] = {
+      installations: [org(5), org(6)],
+      repos: {
+        5: [repo(50, "org-5", "tracker", { private: true })],
+        6: [repo(60, "org-6", "tracker", { private: true })],
+      },
+    };
+    worlds[BOB] = {
+      installations: [org(5), org(6)],
+      repos: {
+        5: [repo(50, "org-5", "tracker", { private: true })],
+        6: [repo(60, "org-6", "tracker", { private: true })],
+      },
+    };
+    await access.compute(alice.id);
+    await access.compute(bob.id);
+    seedData("R_50");
+    seedData("R_60");
+    const gone = "R_50";
+    const kept = "R_60";
+    const board = database.db
+      .insert(schema.boards)
+      .values({
+        userId: alice.id,
+        name: "mine",
+        baseFilter: "repo:org-5/tracker",
+        sort: "updated",
+        subIssueMode: "flat",
+        showOther: true,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .returning()
+      .get();
+    database.db
+      .insert(schema.boardColumns)
+      .values({
+        boardId: board.id,
+        position: 0,
+        name: "bugs",
+        filter: "label:bug",
+      })
+      .run();
+    database.db
+      .insert(schema.savedViews)
+      .values({
+        userId: bob.id,
+        name: "view",
+        filter: "repo:org-5/tracker",
+        sort: "updated",
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+
+    worlds[ALICE] = {
+      installations: [org(6)],
+      repos: { 6: [repo(60, "org-6", "tracker")] },
+    };
+    await access.compute(alice.id);
+    expect(hasRepoAccess(database.db, bob.id, gone)).toBe(true);
+    expect(accessibleRepos(database.db, bob.id).map((row) => row.id)).toContain(
+      gone,
+    );
+
+    worlds[BOB] = {
+      installations: [org(6)],
+      repos: { 6: [repo(60, "org-6", "tracker")] },
+    };
+    await access.compute(bob.id);
+
+    for (const user of [alice, bob]) {
+      expect(
+        accessibleRepos(database.db, user.id).map((row) => row.id),
+      ).toEqual([kept]);
+      expect(hasRepoAccess(database.db, user.id, gone)).toBe(false);
+      expect(
+        database.db
+          .select({ id: schema.issues.id })
+          .from(schema.issues)
+          .where(inUserAccess(database.db, user.id, schema.issues.repoId))
+          .all()
+          .map((row) => row.id)
+          .sort(),
+      ).toEqual(["I_R_60_1", "I_R_60_2"]);
+    }
+    expect(
+      database.db
+        .select()
+        .from(schema.repos)
+        .where(eq(schema.repos.id, gone))
+        .all(),
+    ).toEqual([]);
+    expect(
+      database.db
+        .select()
+        .from(schema.issues)
+        .where(eq(schema.issues.repoId, gone))
+        .all(),
+    ).toEqual([]);
+    expect(
+      database.db
+        .select()
+        .from(schema.labels)
+        .where(eq(schema.labels.repoId, gone))
+        .all(),
+    ).toEqual([]);
+    expect(count(schema.issueLabels)).toBe(1);
+    expect(count(schema.issueAssignees)).toBe(1);
+    expect(
+      database.db
+        .select()
+        .from(schema.issueDeps)
+        .all()
+        .map((row) => `${row.blockedId}>${row.blockingId}`)
+        .sort(),
+    ).toEqual([
+      "I_R_60_1>I_elsewhere",
+      "I_elsewhere>I_R_50_1",
+      "I_elsewhere>I_R_60_1",
+    ]);
+    expect(count(schema.boards)).toBe(1);
+    expect(count(schema.boardColumns)).toBe(1);
+    expect(count(schema.savedViews)).toBe(1);
+    expect(
+      database.db
+        .select()
+        .from(schema.installations)
+        .all()
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual([5, 6]);
+    expect(
+      logs.some(
+        (entry) => entry.msg === "user access computed" && entry.purged === 1,
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves everything in place when the installation stays active through another user", async () => {
+    const { access } = build(allowlist);
+    const alice = userWithToken("alice", ALICE);
+    const bob = userWithToken("bob", BOB);
+    const world = {
+      installations: [org(5)],
+      repos: { 5: [repo(50, "org-5", "tracker")] },
+    };
+    worlds[ALICE] = world;
+    worlds[BOB] = world;
+    await access.compute(alice.id);
+    await access.compute(bob.id);
+    seedData("R_50");
+    const kept = "R_50";
+    worlds[ALICE] = { installations: [], repos: {} };
+    await access.compute(alice.id);
+    expect(accessibleRepos(database.db, bob.id).map((row) => row.id)).toEqual([
+      kept,
+    ]);
+    expect(count(schema.issues)).toBe(2);
+  });
+
+  it("purges nothing for an installation that was never active", async () => {
+    const { access } = build({ users: ["alice"], orgs: [] });
+    const mallory = userWithToken("mallory", "ghu_m");
+    worlds.ghu_m = {
+      installations: [org(9)],
+      repos: { 9: [repo(90, "org-9", "tracker")] },
+    };
+    await access.compute(mallory.id);
+    seedData("R_90");
+    await access.compute(mallory.id);
+    expect(count(schema.repos)).toBe(1);
+    expect(count(schema.issues)).toBe(2);
+  });
+
+  it("rolls the purge back with the access it belongs to when it fails", async () => {
+    const { access } = build(allowlist);
+    const alice = userWithToken("alice", ALICE);
+    worlds[ALICE] = {
+      installations: [org(5)],
+      repos: { 5: [repo(50, "org-5", "tracker")] },
+    };
+    await access.compute(alice.id);
+    seedData("R_50");
+    database.sqlite.exec(
+      "CREATE TRIGGER block_purge BEFORE DELETE ON repos BEGIN SELECT RAISE(ABORT, 'no'); END",
+    );
+    worlds[ALICE] = { installations: [], repos: {} };
+    await expect(access.compute(alice.id)).rejects.toThrow();
+    expect(accessOf(alice.id)).toEqual(["R_50"]);
+    expect(installationsOf(alice.id)).toEqual([5]);
+    expect(count(schema.issues)).toBe(2);
+  });
+
+  it("reports the installations a computation made active, once", async () => {
+    const activated: number[][] = [];
+    const { access } = build(allowlist, undefined, (ids) =>
+      activated.push(ids),
+    );
+    const alice = userWithToken("alice", ALICE);
+    const mallory = userWithToken("mallory", "ghu_m");
+    worlds[ALICE] = { installations: [org(5)], repos: { 5: [] } };
+    worlds.ghu_m = { installations: [org(9)], repos: { 9: [] } };
+    await access.compute(mallory.id);
+    expect(activated).toEqual([]);
+    await access.compute(alice.id);
+    expect(activated).toEqual([[5]]);
+    await access.compute(alice.id);
+    expect(activated).toEqual([[5]]);
   });
 });
 
