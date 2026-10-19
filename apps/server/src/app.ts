@@ -20,10 +20,17 @@ import {
 import type { Db } from "./db/index.js";
 import type { GithubClient, InstallationClient } from "./github/index.js";
 import { createIssueDetails } from "./issues/index.js";
+import type { Jobs } from "./jobs/index.js";
 import {
   contentSecurityPolicy,
   protectStateChanges,
 } from "./security/index.js";
+import {
+  createWebhookRoutes,
+  WEBHOOK_PATH,
+  webhookHandlers,
+  type WebhookHandler,
+} from "./webhooks/index.js";
 
 export interface AppOptions {
   logger: Logger;
@@ -37,6 +44,10 @@ export interface AppOptions {
   publicUrl: string;
   /** What the routes that read GitHub data call as an installation. */
   installations: Pick<InstallationClient, "budgets" | "graphql">;
+  /** Runs the webhook deliveries the intake accepts. */
+  jobs: Jobs;
+  /** Defaults to the event handlers of `webhooks/handlers`. */
+  webhookHandlers?: Readonly<Record<string, WebhookHandler>>;
 }
 
 export function createApp(options: AppOptions) {
@@ -82,6 +93,17 @@ export function createApp(options: AppOptions) {
         logger: options.logger,
         appSecret: options.appSecret,
         access: options.access,
+      }),
+    )
+    .route(
+      WEBHOOK_PATH,
+      createWebhookRoutes({
+        db: options.db,
+        jobs: options.jobs,
+        logger: options.logger,
+        allowlist: options.setup.allowlist,
+        webhookSecret: () => options.setup.credentials()?.webhookSecret ?? null,
+        handlers: options.webhookHandlers ?? webhookHandlers,
       }),
     )
     .route(

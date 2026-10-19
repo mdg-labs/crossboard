@@ -35,6 +35,7 @@ import {
   SENTINEL,
   validEnv,
   unusedInstallations,
+  unusedJobs,
 } from "./helpers.js";
 import { signIn as startSession, createTestAccess } from "./sign-in.js";
 
@@ -105,6 +106,7 @@ function build(env: Record<string, string> = {}) {
     db: database.db,
     github,
     installations: unusedInstallations,
+    jobs: unusedJobs,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,

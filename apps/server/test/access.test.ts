@@ -43,7 +43,12 @@ import {
 } from "./access.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { createFakeGithub, FAKE_API_URL, FAKE_WEB_URL } from "./github-fake.js";
-import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
+import {
+  githubEnv,
+  validEnv,
+  unusedInstallations,
+  unusedJobs,
+} from "./helpers.js";
 import { addUser, signIn } from "./sign-in.js";
 
 const APP_SECRET = "a".repeat(32);
@@ -131,6 +136,7 @@ function appFor({
     db: database.db,
     github,
     installations: unusedInstallations,
+    jobs: unusedJobs,
     version: "1.0.0",
     webRoot: "/nonexistent",
     setup: createSetup({ db: database.db, config, logger }),

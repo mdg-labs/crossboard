@@ -184,6 +184,7 @@ const app = createApp({
   db: database.db,
   github,
   installations,
+  jobs,
   version: readServerVersion(),
   webRoot,
   setup,
