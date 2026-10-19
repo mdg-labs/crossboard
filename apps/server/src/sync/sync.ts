@@ -9,6 +9,7 @@ import type { GithubQuery } from "../github/query.js";
 import { queries } from "../github/queries/index.js";
 import type { Jobs } from "../jobs/index.js";
 import { repositoryStateSchema, skipReason } from "./discovery.js";
+import { completeConnections } from "./connections.js";
 import {
   deleteIssues,
   deleteUnusedLabels,
@@ -17,7 +18,9 @@ import {
   toIssueData,
   writeIssues,
   type IssueData,
+  type IssueNode,
 } from "./issue-data.js";
+import { writeRelations } from "./relations.js";
 
 const { installations, repos } = schema;
 
@@ -200,7 +203,7 @@ export function createSync({
         return "skipped";
       }
 
-      fetched = [];
+      const nodes: IssueNode[] = [];
       let after: string | null = null;
       for (;;) {
         const page = pageSchema.parse(
@@ -214,9 +217,9 @@ export function createSync({
           throw new Error("the repository is not readable");
         }
         pages++;
-        const { nodes, pageInfo } = page.repository.issues;
-        for (const node of nodes) {
-          if (node !== null) fetched.push(toIssueData(node));
+        const { pageInfo } = page.repository.issues;
+        for (const node of page.repository.issues.nodes) {
+          if (node !== null) nodes.push(node);
         }
         if (!pageInfo.hasNextPage) break;
         if (pageInfo.endCursor === null) {
@@ -224,6 +227,8 @@ export function createSync({
         }
         after = pageInfo.endCursor;
       }
+      await completeConnections(send, nodes);
+      fetched = nodes.map(toIssueData);
     } catch (error) {
       logger.error(
         { err: error, installationId, repo: fullName },
@@ -257,6 +262,7 @@ export function createSync({
         return false;
       }
       writeIssues(tx, repoId, fetched, at);
+      writeRelations(tx, fullName, fetched, at);
       const returned = new Set(fetched.map((issue) => issue.id));
       deleteIssues(
         tx,

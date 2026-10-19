@@ -2,7 +2,7 @@ import { eq, inArray, notInArray, and, ne } from "drizzle-orm";
 import { z } from "zod";
 import { schema, type Db } from "../db/index.js";
 
-const { issueAssignees, issueLabels, issues, labels } = schema;
+const { issueAssignees, issueDeps, issueLabels, issues, labels } = schema;
 
 export type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -17,17 +17,40 @@ export const chunks = <T>(items: readonly T[], size: number): T[][] => {
   return out;
 };
 
-const labelSchema = z.object({
+export const labelSchema = z.object({
   id: z.string(),
   name: z.string(),
   color: z.string(),
   description: z.string().nullable(),
 });
 
-const assigneeSchema = z.object({
+export const assigneeSchema = z.object({
   login: z.string(),
   avatarUrl: z.string(),
 });
+
+/** An issue named inside another issue's relations. */
+export const refSchema = z.object({
+  id: z.string(),
+  number: z.number(),
+  title: z.string(),
+  state: z.enum(["OPEN", "CLOSED"]),
+  url: z.string(),
+  repository: z.object({ nameWithOwner: z.string() }),
+});
+
+export const pageInfoSchema = z.object({
+  hasNextPage: z.boolean(),
+  endCursor: z.string().nullable(),
+});
+
+/** A connection's page; GitHub may leave a node `null`. */
+export const connection = <T extends z.ZodType>(node: T) =>
+  z.object({
+    totalCount: z.number(),
+    pageInfo: pageInfoSchema,
+    nodes: z.array(node.nullable()),
+  });
 
 /** One issue as the SPEC §5.3 selection returns it. */
 export const issueNodeSchema = z.object({
@@ -43,20 +66,16 @@ export const issueNodeSchema = z.object({
     .object({ name: z.string(), color: z.string().nullable() })
     .nullable(),
   milestone: z.object({ title: z.string(), url: z.string() }).nullable(),
-  labels: z.object({
-    totalCount: z.number(),
-    nodes: z.array(labelSchema.nullable()),
-  }),
-  assignees: z.object({
-    totalCount: z.number(),
-    nodes: z.array(assigneeSchema.nullable()),
-  }),
-  parent: z.object({ id: z.string() }).nullable(),
+  labels: connection(labelSchema),
+  assignees: connection(assigneeSchema),
+  parent: refSchema.nullable(),
   subIssuesSummary: z.object({ total: z.number(), completed: z.number() }),
   issueDependenciesSummary: z.object({
     totalBlockedBy: z.number(),
     totalBlocking: z.number(),
   }),
+  blockedBy: connection(refSchema),
+  blocking: connection(refSchema),
 });
 
 export type IssueNode = z.infer<typeof issueNodeSchema>;
@@ -73,7 +92,17 @@ export interface AssigneeData {
   avatarUrl: string;
 }
 
-/** An issue as stored: scalars, labels and assignees. */
+/** An issue named by another, as `issue_refs` stores it. */
+export interface RefData {
+  id: string;
+  repoFullName: string;
+  number: number;
+  title: string;
+  state: "OPEN" | "CLOSED";
+  url: string;
+}
+
+/** An issue as stored: scalars, labels, assignees and relations. */
 export interface IssueData {
   id: string;
   databaseId: number;
@@ -87,17 +116,28 @@ export interface IssueData {
   typeColor: string | null;
   milestoneTitle: string | null;
   milestoneUrl: string | null;
-  parentId: string | null;
   subTotal: number;
   subCompleted: number;
   blockedByTotal: number;
   blockingTotal: number;
   labels: LabelData[];
   assignees: AssigneeData[];
+  parent: RefData | null;
+  blockedBy: RefData[];
+  blocking: RefData[];
 }
 
 const present = <T>(items: readonly (T | null)[]): T[] =>
   items.filter((item): item is T => item !== null);
+
+export const toRefData = (node: z.infer<typeof refSchema>): RefData => ({
+  id: node.id,
+  repoFullName: node.repository.nameWithOwner,
+  number: node.number,
+  title: node.title,
+  state: node.state,
+  url: node.url,
+});
 
 export function toIssueData(node: IssueNode): IssueData {
   return {
@@ -113,13 +153,15 @@ export function toIssueData(node: IssueNode): IssueData {
     typeColor: node.issueType?.color ?? null,
     milestoneTitle: node.milestone?.title ?? null,
     milestoneUrl: node.milestone?.url ?? null,
-    parentId: node.parent?.id ?? null,
     subTotal: node.subIssuesSummary.total,
     subCompleted: node.subIssuesSummary.completed,
     blockedByTotal: node.issueDependenciesSummary.totalBlockedBy,
     blockingTotal: node.issueDependenciesSummary.totalBlocking,
     labels: present(node.labels.nodes),
     assignees: present(node.assignees.nodes),
+    parent: node.parent === null ? null : toRefData(node.parent),
+    blockedBy: present(node.blockedBy.nodes).map(toRefData),
+    blocking: present(node.blocking.nodes).map(toRefData),
   };
 }
 
@@ -163,7 +205,26 @@ export function writeIssues(
   }
 
   for (const issue of data) {
-    const { labels: issueLabelData, assignees, ...scalars } = issue;
+    const { labels: issueLabelData, assignees } = issue;
+    const scalars = {
+      id: issue.id,
+      databaseId: issue.databaseId,
+      number: issue.number,
+      title: issue.title,
+      url: issue.url,
+      authorLogin: issue.authorLogin,
+      typeName: issue.typeName,
+      typeColor: issue.typeColor,
+      milestoneTitle: issue.milestoneTitle,
+      milestoneUrl: issue.milestoneUrl,
+      parentId: issue.parent?.id ?? null,
+      subTotal: issue.subTotal,
+      subCompleted: issue.subCompleted,
+      blockedByTotal: issue.blockedByTotal,
+      blockingTotal: issue.blockingTotal,
+      createdAt: issue.createdAt,
+      updatedAt: issue.updatedAt,
+    };
     tx.insert(issues)
       .values({ ...scalars, repoId, syncedAt: at })
       .onConflictDoUpdate({
@@ -218,9 +279,13 @@ export function storedIssueIds(tx: Tx, repoId: string): string[] {
     .map((row) => row.id);
 }
 
-/** Deletes issues by id; their labels, assignees and details cascade. */
+/**
+ * Deletes issues by id; their labels, assignees and details cascade, and so
+ * do the dependency rows where they are the blocked side.
+ */
 export function deleteIssues(tx: Tx, ids: readonly string[]): void {
   for (const part of chunks(ids, CHUNK)) {
+    tx.delete(issueDeps).where(inArray(issueDeps.blockedId, part)).run();
     tx.delete(issues).where(inArray(issues.id, part)).run();
   }
 }

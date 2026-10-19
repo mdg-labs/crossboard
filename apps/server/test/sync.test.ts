@@ -36,6 +36,7 @@ import {
   COST,
   createFakeSyncGithub,
   type FakeIssue,
+  type FakeRef,
   type FakeRepo,
 } from "./sync-fake.js";
 
@@ -171,6 +172,23 @@ describe("the open issues query", () => {
   });
 });
 
+describe("the connection follow-up query", () => {
+  it("is registered, read-only and pages each connection of one issue", () => {
+    const { document } = queries.issueConnectionsPage;
+    expect(() => {
+      assertReadOnlyDocument(document);
+    }).not.toThrow();
+    for (const field of [
+      "labels(first: 20, after: $labelsAfter)",
+      "assignees(first: 10, after: $assigneesAfter)",
+      "blockedBy(first: 20, after: $blockedByAfter)",
+      "blocking(first: 20, after: $blockingAfter)",
+    ]) {
+      expect(document).toContain(field);
+    }
+  });
+});
+
 describe("a repository's initial sync", () => {
   it("pages the open issues and stores their scalars, labels and assignees", async () => {
     addInstallation(1);
@@ -186,7 +204,7 @@ describe("a repository's initial sync", () => {
         title: "v1",
         url: "https://github.test/acme/web/milestone/1",
       },
-      parentId: "I_parent",
+      parent: { id: "I_parent", repo: "acme/web", number: 99 },
       sub: { total: 4, completed: 1 },
       totalBlockedBy: 2,
       totalBlocking: 3,
@@ -513,5 +531,359 @@ describe("the sync job", () => {
     expect(repoRow("R_3")?.syncState).toBe("ready");
     expect(repoRow("R_4")?.syncState).toBe("pending");
     expect(issueRows().map((row) => row.id)).toEqual(["I_1", "I_2"]);
+  });
+});
+
+describe("relations", () => {
+  const ref = (
+    number: number,
+    repo = "acme/api",
+    state: "OPEN" | "CLOSED" = "OPEN",
+  ): FakeRef => ({
+    // the ids of acme/web issues are the ones `issue` gives them
+    id:
+      repo === "acme/web"
+        ? `I_${String(number)}`
+        : `I_${repo.replace("/", "_")}_${String(number)}`,
+    repo,
+    number,
+    state,
+  });
+  const refRows = () =>
+    database.db
+      .select()
+      .from(schema.issueRefs)
+      .orderBy(schema.issueRefs.id)
+      .all();
+  const depRows = () =>
+    database.db
+      .select({
+        blocked: schema.issueDeps.blockedId,
+        blocking: schema.issueDeps.blockingId,
+      })
+      .from(schema.issueDeps)
+      .orderBy(schema.issueDeps.blockedId, schema.issueDeps.blockingId)
+      .all();
+
+  it("stores a ref for every parent and every issue on either side of a dependency, and one edge per readable edge", async () => {
+    addInstallation(1);
+    const crossRepo = ref(7, "acme/api");
+    const closed = ref(8, "acme/web", "CLOSED");
+    const blocked = ref(9, "acme/api");
+    const parent = ref(10, "acme/web");
+    addRepo({
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, {
+          title: "Needs the API",
+          blockedBy: [crossRepo, closed],
+          blocking: [blocked],
+          parent,
+        }),
+      ],
+    });
+    const before = Date.now();
+
+    await build().syncRepo("R_1");
+
+    expect(
+      refRows().map((row) => [
+        row.repoFullName,
+        row.number,
+        row.title,
+        row.state,
+        row.url,
+      ]),
+    ).toEqual(
+      [
+        [
+          "acme/web",
+          1,
+          "Needs the API",
+          "OPEN",
+          "https://github.test/acme/web/issues/1",
+        ],
+        [
+          "acme/api",
+          7,
+          "Issue 7",
+          "OPEN",
+          "https://github.test/acme/api/issues/7",
+        ],
+        [
+          "acme/web",
+          8,
+          "Issue 8",
+          "CLOSED",
+          "https://github.test/acme/web/issues/8",
+        ],
+        [
+          "acme/api",
+          9,
+          "Issue 9",
+          "OPEN",
+          "https://github.test/acme/api/issues/9",
+        ],
+        [
+          "acme/web",
+          10,
+          "Issue 10",
+          "OPEN",
+          "https://github.test/acme/web/issues/10",
+        ],
+      ].sort((a, b) =>
+        String(ref(Number(a[1]), String(a[0]), "OPEN").id).localeCompare(
+          ref(Number(b[1]), String(b[0]), "OPEN").id,
+        ),
+      ),
+    );
+    expect(refRows().every((row) => row.seenAt >= before)).toBe(true);
+    expect(depRows()).toEqual(
+      [
+        { blocked: "I_1", blocking: crossRepo.id },
+        { blocked: "I_1", blocking: closed.id },
+        { blocked: blocked.id, blocking: "I_1" },
+      ].sort(
+        (a, b) =>
+          a.blocked.localeCompare(b.blocked) ||
+          a.blocking.localeCompare(b.blocking),
+      ),
+    );
+    expect(issueRows()[0]?.parentId).toBe(parent.id);
+  });
+
+  it("deduplicates an edge named from both sides", async () => {
+    addInstallation(1);
+    addRepo({
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, { blockedBy: [ref(2, "acme/web")] }),
+        issue(2, { blocking: [ref(1, "acme/web")] }),
+      ],
+    });
+    await build().syncRepo("R_1");
+    expect(depRows()).toEqual([{ blocked: "I_1", blocking: "I_2" }]);
+    expect(refRows().filter((row) => row.id === "I_1")).toHaveLength(1);
+  });
+
+  it("pages 25 blockers and 25 labels and 12 assignees by follow-up queries for the issue", async () => {
+    addInstallation(1);
+    const blockers = Array.from({ length: 25 }, (_, index) =>
+      ref(100 + index, "acme/api"),
+    );
+    const labelList = Array.from({ length: 25 }, (_, index) => ({
+      id: `L_${String(index)}`,
+      name: `label-${String(index)}`,
+      color: "ededed",
+    }));
+    const assigneeList = Array.from({ length: 12 }, (_, index) => ({
+      login: `user-${String(index)}`,
+      avatarUrl: `https://a.test/${String(index)}`,
+    }));
+    addRepo({
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, {
+          blockedBy: blockers,
+          labels: labelList,
+          assignees: assigneeList,
+        }),
+        issue(2),
+      ],
+    });
+
+    await build().syncRepo("R_1");
+
+    expect(depRows()).toHaveLength(25);
+    expect(database.db.select().from(schema.issueLabels).all()).toHaveLength(
+      25,
+    );
+    expect(database.db.select().from(schema.issueAssignees).all()).toHaveLength(
+      12,
+    );
+    expect(issueRows()[0]).toMatchObject({ blockedByTotal: 25 });
+    const followUps = github.requestsFor("IssueConnectionsPage");
+    // each connection needs one more page, and they are asked for together
+    expect(followUps.map((request) => request.variables)).toEqual([
+      {
+        id: "I_1",
+        labels: true,
+        labelsAfter: "20",
+        assignees: true,
+        assigneesAfter: "10",
+        blockedBy: true,
+        blockedByAfter: "20",
+        blocking: false,
+        blockingAfter: null,
+      },
+    ]);
+  });
+
+  it("follows a connection through several follow-up pages", async () => {
+    addInstallation(1);
+    addRepo({
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, {
+          blocking: Array.from({ length: 45 }, (_, index) =>
+            ref(200 + index, "acme/api"),
+          ),
+        }),
+      ],
+    });
+    await build().syncRepo("R_1");
+    expect(depRows()).toHaveLength(45);
+    expect(
+      github
+        .requestsFor("IssueConnectionsPage")
+        .map((request) => request.variables.blockingAfter),
+    ).toEqual(["20", "40"]);
+  });
+
+  it("keeps GitHub's totals, so a total above the readable count is the not-accessible count", async () => {
+    addInstallation(1);
+    addRepo({
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, {
+          blockedBy: [ref(7)],
+          totalBlockedBy: 3,
+          blocking: [],
+          totalBlocking: 1,
+        }),
+      ],
+    });
+    await build().syncRepo("R_1");
+    const stored = issueRows()[0];
+    const readable = (side: "blocked" | "blocking") =>
+      depRows().filter((row) => row[side] === "I_1").length;
+    expect(stored).toMatchObject({ blockedByTotal: 3, blockingTotal: 1 });
+    expect(
+      Math.max(0, (stored?.blockedByTotal ?? 0) - readable("blocked")),
+    ).toBe(2);
+    expect(
+      Math.max(0, (stored?.blockingTotal ?? 0) - readable("blocking")),
+    ).toBe(1);
+  });
+
+  it("replaces the edges of the fetched issues, so a dependency removed on GitHub is gone after both repos resync", async () => {
+    addInstallation(1);
+    const web: FakeRepo = {
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, { blockedBy: [ref(2, "acme/web"), ref(9, "acme/api")] }),
+        issue(2),
+      ],
+    };
+    const api: FakeRepo = {
+      name: "acme/api",
+      id: "R_2",
+      issues: [
+        issue(9, {
+          id: ref(9).id,
+          repo: "acme/api",
+          blocking: [ref(1, "acme/web")],
+        }),
+      ],
+    };
+    addRepo(web);
+    addRepo(api);
+    const sync = build();
+    await sync.syncRepo("R_1");
+    await sync.syncRepo("R_2");
+    expect(depRows()).toEqual(
+      [
+        { blocked: "I_1", blocking: "I_2" },
+        { blocked: "I_1", blocking: ref(9).id },
+      ].sort((a, b) => a.blocking.localeCompare(b.blocking)),
+    );
+
+    // the dependency on acme/api#9 is removed on GitHub
+    web.issues = [issue(1, { blockedBy: [ref(2, "acme/web")] }), issue(2)];
+    api.issues = [issue(9, { id: ref(9).id, repo: "acme/api" })];
+    await sync.syncRepo("R_1");
+    await sync.syncRepo("R_2");
+
+    expect(depRows()).toEqual([{ blocked: "I_1", blocking: "I_2" }]);
+  });
+
+  it("keeps an edge whose end in the repo this sync did not fetch", async () => {
+    addInstallation(1);
+    const repo: FakeRepo = {
+      name: "acme/web",
+      id: "R_1",
+      issues: [issue(1, { blockedBy: [ref(7, "acme/api")] })],
+    };
+    addRepo(repo);
+    const sync = build();
+    await sync.syncRepo("R_1");
+
+    // the closed acme/web#8 is not fetched; its edges belong to the sync of the other repo
+    database.db
+      .insert(schema.issueRefs)
+      .values({
+        id: ref(8, "acme/web", "CLOSED").id,
+        repoFullName: "acme/web",
+        number: 8,
+        title: "Issue 8",
+        state: "CLOSED",
+        url: "https://github.test/acme/web/issues/8",
+        seenAt: 1,
+      })
+      .run();
+    database.db
+      .insert(schema.issueDeps)
+      .values({
+        blockedId: ref(8, "acme/web", "CLOSED").id,
+        blockingId: ref(7, "acme/api").id,
+      })
+      .run();
+
+    await sync.syncRepo("R_1");
+
+    expect(depRows()).toEqual(
+      [
+        { blocked: "I_1", blocking: ref(7, "acme/api").id },
+        {
+          blocked: ref(8, "acme/web", "CLOSED").id,
+          blocking: ref(7, "acme/api").id,
+        },
+      ].sort(
+        (a, b) =>
+          a.blocked.localeCompare(b.blocked) ||
+          a.blocking.localeCompare(b.blocking),
+      ),
+    );
+  });
+
+  it("marks the repo error and replaces nothing when a follow-up query fails", async () => {
+    addInstallation(1);
+    addRepo({
+      name: "acme/web",
+      id: "R_1",
+      issues: [
+        issue(1, {
+          blockedBy: Array.from({ length: 25 }, (_, index) => ref(100 + index)),
+        }),
+      ],
+    });
+    github.world.failWith = (request) =>
+      request.name === "IssueConnectionsPage" ? 502 : undefined;
+
+    expect(await build().syncRepo("R_1")).toBe("error");
+
+    expect(repoRow("R_1")).toMatchObject({
+      syncState: "error",
+      syncDetail: "boom",
+    });
+    expect(issueRows()).toEqual([]);
+    expect(refRows()).toEqual([]);
+    expect(depRows()).toEqual([]);
   });
 });

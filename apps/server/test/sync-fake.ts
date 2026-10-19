@@ -8,6 +8,15 @@ export interface FakeLabel {
   description?: string | null;
 }
 
+/** An issue another issue names: its parent, a blocker or something it blocks. */
+export interface FakeRef {
+  id: string;
+  repo: string;
+  number: number;
+  title?: string;
+  state?: "OPEN" | "CLOSED";
+}
+
 export interface FakeIssue {
   id: string;
   /** `owner/name` of the repository the issue is in. */
@@ -18,8 +27,12 @@ export interface FakeIssue {
   assignees?: { login: string; avatarUrl: string }[];
   type?: { name: string; color: string };
   milestone?: { title: string; url: string };
-  parentId?: string;
+  parent?: FakeRef;
+  /** The relations the installation can read. */
+  blockedBy?: FakeRef[];
+  blocking?: FakeRef[];
   sub?: { total: number; completed: number };
+  /** What GitHub counts, which includes relations the installation cannot read. */
   totalBlockedBy?: number;
   totalBlocking?: number;
 }
@@ -38,9 +51,40 @@ export const PAGE = 100;
 
 export const COST = 4;
 
+export const fakeRef = (ref: FakeRef) => ({
+  id: ref.id,
+  number: ref.number,
+  title: ref.title ?? `Issue ${String(ref.number)}`,
+  state: ref.state ?? "OPEN",
+  url: `https://github.test/${ref.repo}/issues/${String(ref.number)}`,
+  repository: { nameWithOwner: ref.repo },
+});
+
+/** The page of `items` that starts after the cursor, in a connection of `size` per page. */
+export function fakePage<T>(
+  items: readonly T[],
+  size: number,
+  after: string | null,
+) {
+  const start = after === null ? 0 : Number(after);
+  const nodes = items.slice(start, start + size);
+  const end = start + nodes.length;
+  return {
+    pageInfo: { hasNextPage: end < items.length, endCursor: String(end) },
+    nodes,
+  };
+}
+
+const fakeLabel = (label: FakeLabel) => ({
+  ...label,
+  description: label.description ?? null,
+});
+
 export const fakeNode = (issue: FakeIssue) => {
   const labels = issue.labels ?? [];
   const assignees = issue.assignees ?? [];
+  const blockedBy = issue.blockedBy ?? [];
+  const blocking = issue.blocking ?? [];
   return {
     id: issue.id,
     databaseId: 1000 + issue.number,
@@ -54,17 +98,25 @@ export const fakeNode = (issue: FakeIssue) => {
     milestone: issue.milestone ?? null,
     labels: {
       totalCount: labels.length,
-      nodes: labels.map((label) => ({
-        ...label,
-        description: label.description ?? null,
-      })),
+      ...fakePage(labels.map(fakeLabel), 20, null),
     },
-    assignees: { totalCount: assignees.length, nodes: assignees },
-    parent: issue.parentId === undefined ? null : { id: issue.parentId },
+    assignees: {
+      totalCount: assignees.length,
+      ...fakePage(assignees, 10, null),
+    },
+    parent: issue.parent === undefined ? null : fakeRef(issue.parent),
     subIssuesSummary: issue.sub ?? { total: 0, completed: 0 },
     issueDependenciesSummary: {
-      totalBlockedBy: issue.totalBlockedBy ?? 0,
-      totalBlocking: issue.totalBlocking ?? 0,
+      totalBlockedBy: issue.totalBlockedBy ?? blockedBy.length,
+      totalBlocking: issue.totalBlocking ?? blocking.length,
+    },
+    blockedBy: {
+      totalCount: blockedBy.length,
+      ...fakePage(blockedBy.map(fakeRef), 20, null),
+    },
+    blocking: {
+      totalCount: blocking.length,
+      ...fakePage(blocking.map(fakeRef), 20, null),
     },
   };
 };
@@ -183,6 +235,46 @@ export function createFakeSyncGithub() {
           },
         },
       });
+    }
+    if (name === "IssueConnectionsPage") {
+      const issue = world.repos
+        .flatMap((entry) => entry.issues)
+        .find((entry) => entry.id === body.variables.id);
+      if (issue === undefined) {
+        return HttpResponse.json({ data: { rateLimit, node: null } });
+      }
+      const after = (key: string) =>
+        body.variables[`${key}After`] as string | null;
+      const node: Record<string, unknown> = {};
+      if (body.variables.labels === true) {
+        node.labels = fakePage(
+          (issue.labels ?? []).map(fakeLabel),
+          20,
+          after("labels"),
+        );
+      }
+      if (body.variables.assignees === true) {
+        node.assignees = fakePage(
+          issue.assignees ?? [],
+          10,
+          after("assignees"),
+        );
+      }
+      if (body.variables.blockedBy === true) {
+        node.blockedBy = fakePage(
+          (issue.blockedBy ?? []).map(fakeRef),
+          20,
+          after("blockedBy"),
+        );
+      }
+      if (body.variables.blocking === true) {
+        node.blocking = fakePage(
+          (issue.blocking ?? []).map(fakeRef),
+          20,
+          after("blocking"),
+        );
+      }
+      return HttpResponse.json({ data: { rateLimit, node } });
     }
     return HttpResponse.json(
       { errors: [{ message: `the fake has no answer for ${name}` }] },
