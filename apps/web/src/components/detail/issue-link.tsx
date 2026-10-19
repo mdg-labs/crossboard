@@ -25,14 +25,18 @@ export const labelUrl = (origin: string, ref: IssueRef, name: string): string =>
 export function ExternalLink({
   href,
   className,
+  label,
   children,
 }: {
   href: string;
   className?: string;
+  /** The accessible name, for a link whose content is not text. */
+  label?: string;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
     <a
+      aria-label={label}
       className={className}
       href={href}
       rel="noopener noreferrer"
@@ -53,6 +57,7 @@ export function IssueLink({
   synced,
   onOpenIssue,
   className,
+  label,
   children,
 }: {
   issue: IssueRef;
@@ -60,17 +65,20 @@ export function IssueLink({
   synced: boolean;
   onOpenIssue: (issue: IssueRef) => void;
   className?: string;
+  /** The accessible name, for a link whose content is not text. */
+  label?: string;
   children: React.ReactNode;
 }): React.ReactElement {
   if (!synced) {
     return (
-      <ExternalLink className={className} href={url}>
+      <ExternalLink className={className} href={url} label={label}>
         {children}
       </ExternalLink>
     );
   }
   return (
     <a
+      aria-label={label}
       className={className}
       href={detailPath(issue)}
       onClick={(event) => {

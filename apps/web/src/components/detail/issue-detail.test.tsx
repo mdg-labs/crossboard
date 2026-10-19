@@ -340,6 +340,54 @@ describe("the issue detail", () => {
     });
   });
 
+  describe("the dependency graph", () => {
+    it("is shown in its own section when the issue has dependencies", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(
+            summary({
+              blocking: {
+                open: 1,
+                notAccessible: 0,
+                items: [relation(8, { title: "Blocked one" })],
+              },
+            }),
+          ),
+        details: () => Response.json(details()),
+      });
+      const onOpenIssue = renderDetail();
+
+      const graph = await screen.findByRole("group", {
+        name: "Dependency graph",
+      });
+      expect(
+        screen.getByRole("button", { name: /Dependency graph/ }),
+      ).toBeTruthy();
+      fireEvent.click(
+        within(graph).getByRole("link", { name: /acme\/widgets#8/ }),
+      );
+      expect(onOpenIssue).toHaveBeenCalledWith({
+        owner: "acme",
+        repo: "widgets",
+        number: 8,
+      });
+    });
+
+    it("is left out when the issue has no dependencies", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () => Response.json(details()),
+      });
+      renderDetail();
+
+      await screen.findByText("fails");
+      expect(
+        screen.queryByRole("group", { name: "Dependency graph" }),
+      ).toBeNull();
+      expect(screen.queryByText("Dependency graph")).toBeNull();
+    });
+  });
+
   describe("failures", () => {
     it("shows an Alert with a retry for the summary", async () => {
       let calls = 0;

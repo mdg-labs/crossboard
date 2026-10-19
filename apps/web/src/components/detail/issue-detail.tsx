@@ -8,6 +8,8 @@ import {
   repoUrl,
   userUrl,
 } from "@/components/detail/issue-link";
+import { DependencyGraph } from "@/components/detail/dependency-graph/dependency-graph";
+import { hasDependencies } from "@/components/detail/dependency-graph/layout";
 import { MarkdownBody } from "@/components/detail/markdown-body";
 import { RelationList } from "@/components/detail/relation-list";
 import { Section } from "@/components/detail/section";
@@ -272,6 +274,13 @@ function Summary({
           onOpenIssue={onOpenIssue}
         />
       </Section>
+      {hasDependencies(summary) ? (
+        <Section title="Dependency graph">
+          <div className="overflow-x-auto">
+            <DependencyGraph onOpenIssue={onOpenIssue} summary={summary} />
+          </div>
+        </Section>
+      ) : null}
     </>
   );
 }
