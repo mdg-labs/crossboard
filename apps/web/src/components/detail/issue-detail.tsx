@@ -144,9 +144,7 @@ function Relations({
       </Section>
       {hasDependencies(summary) ? (
         <Section title="Dependency graph">
-          <div className="overflow-x-auto">
-            <DependencyGraph onOpenIssue={onOpenIssue} summary={summary} />
-          </div>
+          <DependencyGraph onOpenIssue={onOpenIssue} summary={summary} />
         </Section>
       ) : null}
     </>
