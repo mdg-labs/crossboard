@@ -1,8 +1,9 @@
 name: CI
 
 # Runs on the self-hosted runner, so it takes no secret and no write
-# permission: the token is read-only and nothing here publishes (publishing
-# belongs to the tag-gated release workflow, THREAT_MODEL T15). It must stay on
+# permission: the token is read-only and this workflow publishes nothing
+# (publishing belongs to the release workflow on a version tag and the nightly
+# workflow on a push to `main`, THREAT_MODEL T15, SPEC D-23). It must stay on
 # `pull_request`, never `pull_request_target`, which would hand a fork's code
 # a write token and the repository secrets.
 
