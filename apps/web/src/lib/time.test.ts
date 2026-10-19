@@ -33,10 +33,21 @@ describe("formatAbsoluteTime", () => {
     }
   });
 
+  const inZone = (timeZone: string) =>
+    new Intl.DateTimeFormat(undefined, {
+      timeZone,
+      dateStyle: "medium",
+      timeStyle: "medium",
+    }).format(NOW);
+
   it("uses the time zone of the browser", () => {
     process.env.TZ = "Asia/Kolkata";
-    expect(formatAbsoluteTime(NOW)).toContain("5:30:00");
+    const kolkata = formatAbsoluteTime(NOW);
     process.env.TZ = "America/New_York";
-    expect(formatAbsoluteTime(NOW)).toContain("8:00:00");
+    const newYork = formatAbsoluteTime(NOW);
+
+    expect(kolkata).toBe(inZone("Asia/Kolkata"));
+    expect(newYork).toBe(inZone("America/New_York"));
+    expect(kolkata).not.toBe(newYork);
   });
 });
