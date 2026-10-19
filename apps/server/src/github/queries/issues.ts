@@ -52,7 +52,7 @@ query IssuesByIds($ids: [ID!]!) {
   rateLimit { cost remaining resetAt }
   nodes(ids: $ids) {
     ... on Issue {
-      state${ISSUE_FIELDS}
+      state repository { id }${ISSUE_FIELDS}
     }
   }
 }

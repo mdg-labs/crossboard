@@ -5,8 +5,9 @@ export {
   type WebhookRoutesOptions,
 } from "./route.js";
 export {
-  webhookHandlers,
+  createWebhookHandlers,
   type WebhookDelivery,
   type WebhookHandler,
+  type WebhookHandlersOptions,
 } from "./handlers/index.js";
 export { verifySignature } from "./signature.js";

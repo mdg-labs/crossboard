@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -296,6 +297,118 @@ describe("process entry", () => {
     expect(response.status).toBe(200);
     expect(graphql).toHaveBeenCalledTimes(1);
     expect(graphql.mock.calls[0]?.[0]).toBe(1);
+  });
+
+  it("applies signed issue webhooks through the handlers the entry registers", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const { db } = entry.database;
+    db.insert(schema.installations)
+      .values({
+        id: 1,
+        accountLogin: "octocat",
+        accountId: 1,
+        accountType: "User",
+        suspended: false,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    db.insert(schema.repos)
+      .values({
+        id: "R_1",
+        databaseId: 1,
+        installationId: 1,
+        owner: "octocat",
+        name: "repo-1",
+        private: true,
+        syncState: "ready",
+        openIssueCount: 2,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    for (const number of [1, 2]) {
+      db.insert(schema.issues)
+        .values({
+          id: `I_${String(number)}`,
+          databaseId: number,
+          repoId: "R_1",
+          number,
+          title: `Issue ${String(number)}`,
+          url: `https://github.com/octocat/repo-1/issues/${String(number)}`,
+          subTotal: 0,
+          subCompleted: 0,
+          blockedByTotal: 0,
+          blockingTotal: 0,
+          createdAt: 1000,
+          updatedAt: 1000,
+          syncedAt: 1,
+        })
+        .run();
+      db.insert(schema.issueDetails)
+        .values({
+          issueId: `I_${String(number)}`,
+          bodyHtml: "<p>cached</p>",
+          commentsJson: "[]",
+          commentsTotal: 0,
+          subIssuesJson: JSON.stringify({ total: 0, items: [] }),
+          fetchedForUpdatedAt: 1000,
+          fetchedAt: 1,
+        })
+        .run();
+    }
+    const send = (event: string, payload: object) => {
+      const body = JSON.stringify({
+        installation: { id: 1 },
+        repository: { node_id: "R_1", private: true },
+        ...payload,
+      });
+      return fetch(`http://127.0.0.1:${port}/webhooks/github`, {
+        method: "POST",
+        body,
+        headers: {
+          "Content-Type": "application/json",
+          "X-GitHub-Event": event,
+          "X-GitHub-Delivery": `delivery-${event}`,
+          "X-Hub-Signature-256": `sha256=${createHmac("sha256", githubEnv.GITHUB_WEBHOOK_SECRET).update(body).digest("hex")}`,
+        },
+      });
+    };
+
+    expect(
+      (
+        await send("issue_comment", {
+          action: "created",
+          issue: { node_id: "I_1" },
+        })
+      ).status,
+    ).toBe(202);
+    expect(
+      (
+        await send("issues", {
+          action: "deleted",
+          issue: { node_id: "I_2" },
+        })
+      ).status,
+    ).toBe(202);
+
+    await vi.waitFor(() => {
+      expect(
+        db
+          .select()
+          .from(schema.issues)
+          .all()
+          .map((row) => row.id),
+      ).toEqual(["I_1"]);
+      expect(
+        db
+          .select()
+          .from(schema.issueDetails)
+          .all()
+          .map((row) => row.issueId),
+      ).toEqual([]);
+    });
   });
 
   it("answers unknown /api routes in the error shape through the listener", async () => {

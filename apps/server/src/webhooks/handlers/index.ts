@@ -1,4 +1,9 @@
 import type { Logger } from "pino";
+import type { Db } from "../../db/index.js";
+import type { Jobs } from "../../jobs/index.js";
+import type { Refetch } from "../../sync/refetch.js";
+import { createIssueHandlers } from "./issues.js";
+import { createLabelHandler } from "./label.js";
 
 /** What a handler is given about the delivery it applies. */
 export interface WebhookDelivery {
@@ -17,9 +22,26 @@ export type WebhookHandler = (
   delivery: WebhookDelivery,
 ) => void | Promise<void>;
 
+export interface WebhookHandlersOptions {
+  db: Db;
+  /** The queue that runs the debounced refetches; the handlers register their job on it. */
+  jobs: Jobs;
+  /** Removes and refetches issues by the SPEC §8.2 rules. */
+  issues: Pick<Refetch, "refetch" | "remove">;
+  /** How long a refetch waits for further deliveries about its issue; SPEC §6.2 says 5 s. */
+  debounceMs?: number;
+}
+
 /**
  * The handler of each webhook event name. A delivery whose event has no entry
- * here is acknowledged and dropped. Each event's handler is added by the item
- * that applies it.
+ * here is acknowledged and dropped. Creating the handlers registers their
+ * refetch job on `jobs`, so it is done once per queue.
  */
-export const webhookHandlers: Readonly<Record<string, WebhookHandler>> = {};
+export function createWebhookHandlers(
+  options: WebhookHandlersOptions,
+): Readonly<Record<string, WebhookHandler>> {
+  return {
+    ...createIssueHandlers(options),
+    label: createLabelHandler(options.db),
+  };
+}

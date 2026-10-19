@@ -86,13 +86,15 @@ const fakeLabel = (label: FakeLabel) => ({
 
 export const isOpen = (issue: FakeIssue) => (issue.state ?? "OPEN") === "OPEN";
 
-export const fakeNode = (issue: FakeIssue, withState = false) => {
+export const fakeNode = (issue: FakeIssue, withState = false, repoId = "") => {
   const labels = issue.labels ?? [];
   const assignees = issue.assignees ?? [];
   const blockedBy = issue.blockedBy ?? [];
   const blocking = issue.blocking ?? [];
   return {
-    ...(withState ? { state: issue.state ?? "OPEN" } : {}),
+    ...(withState
+      ? { state: issue.state ?? "OPEN", repository: { id: repoId } }
+      : {}),
     id: issue.id,
     databaseId: 1000 + issue.number,
     number: issue.number,
@@ -257,7 +259,9 @@ export function createFakeSyncGithub() {
           ])
           .find((entry) => entry.issue.id === id);
         if (found === undefined) missing.push(index);
-        return found === undefined ? null : fakeNode(found.issue, true);
+        return found === undefined
+          ? null
+          : fakeNode(found.issue, true, found.repo.id);
       });
       // GitHub answers with the node `null` and a NOT_FOUND entry per missing id.
       return HttpResponse.json({

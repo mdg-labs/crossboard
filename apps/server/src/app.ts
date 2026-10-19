@@ -28,7 +28,6 @@ import {
 import {
   createWebhookRoutes,
   WEBHOOK_PATH,
-  webhookHandlers,
   type WebhookHandler,
 } from "./webhooks/index.js";
 
@@ -46,7 +45,7 @@ export interface AppOptions {
   installations: Pick<InstallationClient, "budgets" | "graphql">;
   /** Runs the webhook deliveries the intake accepts. */
   jobs: Jobs;
-  /** Defaults to the event handlers of `webhooks/handlers`. */
+  /** The event handlers of `createWebhookHandlers`; without them every delivery is acknowledged and dropped. */
   webhookHandlers?: Readonly<Record<string, WebhookHandler>>;
 }
 
@@ -103,7 +102,7 @@ export function createApp(options: AppOptions) {
         logger: options.logger,
         allowlist: options.setup.allowlist,
         webhookSecret: () => options.setup.credentials()?.webhookSecret ?? null,
-        handlers: options.webhookHandlers ?? webhookHandlers,
+        handlers: options.webhookHandlers ?? {},
       }),
     )
     .route(

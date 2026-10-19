@@ -39,6 +39,7 @@ import {
   registerSyncJob,
 } from "./sync/sync.js";
 import { readServerVersion } from "./version.js";
+import { createWebhookHandlers } from "./webhooks/index.js";
 import type { Logger } from "pino";
 
 function bootstrap(): {
@@ -179,12 +180,19 @@ for (const id of activeInstallationIds(database.db, setup.allowlist)) {
 }
 enqueueSyncAtStart(jobs, database.db, setup.allowlist);
 
+const webhookHandlers = createWebhookHandlers({
+  db: database.db,
+  jobs,
+  issues,
+});
+
 const app = createApp({
   logger,
   db: database.db,
   github,
   installations,
   jobs,
+  webhookHandlers,
   version: readServerVersion(),
   webRoot,
   setup,
