@@ -339,7 +339,7 @@ All `/api/*` routes except `/api/health` and `/api/setup/*` (setup cookie instea
 
 **Issue item** (list rows, cards, the summary route): `{ id, repo: { owner, name }, number, title, url, author, type: { name, color } | null, milestone: { title, url } | null, labels: [{ name, color }], assignees: [{ login, avatarUrl }], parent: { owner, repo, number } | null, subIssues: { total, completed }, blockedBy: { open, notAccessible }, blocking: { open, notAccessible }, isBlocked, createdAt, updatedAt }`, defined once as a Zod schema in `apps/server`. The summary route adds the full `blockedBy`/`blocking` lists (FR-23) and the parent's title and state.
 
-Filtering: the server loads the user's accessible open issues (with labels, assignees and dependency states) from SQLite and evaluates the filter in memory. Target: p95 under 300 ms for `/api/issues` with 10,000 accessible issues; an integration test seeds 10,000 issues and asserts a single filtered request completes in under 1,000 ms.
+Filtering: the server loads the user's accessible open issues (with labels, assignees and dependency states) from SQLite and evaluates the filter in memory. A parent or dependency in a repo outside the session user's `user_repo_access` is never named: the parent is `null` and the relation counts as not accessible for that user (FR-24, §9.1). Target: p95 under 300 ms for `/api/issues` with 10,000 accessible issues; an integration test seeds 10,000 issues and asserts a single filtered request completes in under 1,000 ms.
 
 ### 7.5 Configuration
 Configuration comes only from environment variables, validated at startup; an invalid or missing required value stops the process with a message naming the variable (never its value).
