@@ -61,11 +61,19 @@ export function withPickedRepos(q: string, repos: string[]): string | null {
   let after = filter.slice(term.end);
   if (repos.length > 0) {
     before += qualifier;
-  } else if (/^\s*AND(\s|$)/.test(after)) {
-    // Dropping the term must not leave its AND without a left operand.
-    after = after.replace(/^\s*AND\s*/, "");
   } else {
-    before = before.replace(/\s*AND\s*$/, "");
+    // The term's span excludes parentheses around it; dropping the term
+    // must not leave them empty.
+    while (/\(\s*$/.test(before) && /^\s*\)/.test(after)) {
+      before = before.replace(/\(\s*$/, "");
+      after = after.replace(/^\s*\)/, "");
+    }
+    if (/^\s*AND(\s|$)/.test(after)) {
+      // Dropping the term must not leave its AND without a left operand.
+      after = after.replace(/^\s*AND\s*/, "");
+    } else {
+      before = before.replace(/\s*AND\s*$/, "");
+    }
   }
   const head = before.trimEnd();
   const tail = after.trimStart();

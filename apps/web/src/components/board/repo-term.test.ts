@@ -59,6 +59,9 @@ describe("withPickedRepos", () => {
     ["repo:acme/a AND label:bug", "label:bug"],
     ["label:bug AND repo:acme/a", "label:bug"],
     ["label:bug AND repo:acme/a AND is:open", "label:bug AND is:open"],
+    ["(repo:acme/a) label:bug", "label:bug"],
+    ["label:bug ((repo:acme/a))", "label:bug"],
+    ["label:bug AND (repo:acme/a) AND is:open", "label:bug AND is:open"],
     ["label:bug", "label:bug"],
   ])("removes the term from %j when nothing is picked", (q, expected) => {
     expect(withPickedRepos(q, [])).toBe(expected);
