@@ -414,9 +414,9 @@ saved_views       id int PK, user_id → users, name, filter, sort, created_at, 
 
 ### 8.2 Rules
 - Issue data is stored **once per repo** (not per user); visibility is always joined through `user_repo_access`. This is what makes the cloud version possible without remodeling.
-- **Removing an issue** deletes its `issues` row (labels, assignees and details cascade) and its `issue_deps` rows where it is the blocked side. Then:
-  - **closed:** its `issue_refs.state` becomes `CLOSED`; rows where it is the blocking side stay, so the issues it blocked show it struck-through and stop counting it (FR-25).
-  - **deleted, transferred or no longer readable:** its ref and every remaining `issue_deps` row that mentions it are deleted, and every synced issue on the other side of those rows is refetched (so its totals and not-accessible count stay consistent).
+- **Removing an issue** deletes its `issues` row (labels, assignees and details cascade) and, except as `closed` says below, its `issue_deps` rows where it is the blocked side. Before anything is deleted, the synced issues the removal affects are refetched (§6.2), so their totals, not-accessible counts and parent references stay consistent; a failed refetch aborts the removal with nothing deleted, and it is retried. With either reason, the synced children whose `parent_id` is the removed issue are refetched. Then:
+  - **closed:** its `issue_refs.state` becomes `CLOSED`; rows where it is the blocking side stay, so the issues it blocked show it struck-through and stop counting it (FR-25). The synced issues that block it are refetched too, because GitHub's totals still count a closed relation (§5.5); the rows from those blockers that their refetch stored stay, so FR-24's subtraction stays consistent, and only the removed issue's rows from other blockers are deleted.
+  - **deleted, transferred or no longer readable:** its ref and every remaining `issue_deps` row that mentions it are deleted, and every synced issue on the other side of those rows is refetched.
 - **Purging a repo** deletes its issues, labels and access rows. Purging an installation purges its repos. Boards and saved views are never deleted by sync.
 - `issue_refs` rows no longer referenced by any issue or dependency are deleted by the daily resync.
 - `user_tokens`, `app_config.value_enc` and secrets are encrypted (§9.3); nothing else is.

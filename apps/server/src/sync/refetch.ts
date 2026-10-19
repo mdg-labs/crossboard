@@ -63,8 +63,8 @@ export interface Refetch extends Removal {
    * batches of 50 grouped by the installation of each issue's repo and fetched
    * with that installation's token, and updates each one with its labels,
    * assignees, refs and edges. A result that is closed is removed as closed;
-   * one that is `null` for its own installation as gone (SPEC §8.2), which
-   * refetches the issues on the other side of its edges in turn. Ids that are
+   * one that is `null` for its own installation as gone (SPEC §8.2), either of
+   * which refetches the synced issues its removal affects in turn. Ids that are
    * not synced issues, and issues of an installation that is not active, are
    * left alone. A GitHub failure throws; whatever was fetched before it stays.
    * Resolves to the GraphQL cost of every query it sent, including those of the
@@ -75,8 +75,8 @@ export interface Refetch extends Removal {
 
 /**
  * The issue refetch and, with it, the removal every path uses: removing an
- * issue as gone refetches its counterparts, and refetching can find an issue
- * closed or gone.
+ * issue refetches the synced issues it affects, and refetching can find an
+ * issue closed or gone.
  */
 export function createRefetch({
   db,
