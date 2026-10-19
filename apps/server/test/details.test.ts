@@ -629,6 +629,19 @@ describe("GET /api/issues/:owner/:repo/:number/details", () => {
       expect((await details(build(fake.client), cookie)).status).toBe(200);
     });
 
+    it("fetches at 5% remaining, where background jobs are already paused", async () => {
+      const fake = fakeInstallations();
+      fake.state.budget = {
+        remaining: 250,
+        limit: 5000,
+        resetAt: Date.now() + 60_000,
+      };
+      const { cookie } = setupOne();
+
+      expect((await details(build(fake.client), cookie)).status).toBe(200);
+      expect(fake.calls).toHaveLength(1);
+    });
+
     it("fetches when the reported budget has already reset", async () => {
       const fake = fakeInstallations();
       fake.state.budget = {

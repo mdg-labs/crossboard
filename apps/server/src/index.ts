@@ -22,7 +22,7 @@ import {
   createGithubClient,
   createInstallationClient,
 } from "./github/index.js";
-import { createJobs } from "./jobs/index.js";
+import { createInstallationPause, createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
 import {
   createDiscovery,
@@ -40,7 +40,7 @@ import {
   registerSyncJob,
 } from "./sync/sync.js";
 import { readServerVersion } from "./version.js";
-import { createWebhookHandlers } from "./webhooks/index.js";
+import { createWebhookHandlers, webhookJobName } from "./webhooks/index.js";
 import type { Logger } from "pino";
 
 function bootstrap(): {
@@ -82,8 +82,29 @@ logger.info(
   "crossboard configured",
 );
 
+export const github = createGithubClient({
+  apiUrl: config.githubApiUrl,
+  webUrl: config.githubWebUrl,
+  logger,
+});
+
 // Started once the migrations are applied, so handlers can rely on the schema.
-export const jobs = createJobs({ logger });
+// Every background job that names an installation passes the pause rule: a
+// suspended installation's job is dropped and one below 10% of its budget
+// waits for the reset. The deliveries that lift a suspension or remove the
+// installation are exempt, or a suspended installation could never resume.
+export const jobs = createJobs({
+  logger,
+  pause: createInstallationPause({
+    db: database.db,
+    budgets: github.budgets,
+    exemptJobs: [
+      "installation",
+      "installation_repositories",
+      "github_app_authorization",
+    ].map(webhookJobName),
+  }),
+});
 registerSessionCleanup(jobs, database.db, logger);
 jobs.start();
 enqueueSessionCleanupAtStart(jobs);
@@ -95,12 +116,6 @@ if (!existsSync(join(webRoot, "index.html"))) {
     "the built web app was not found; only /api is served",
   );
 }
-
-export const github = createGithubClient({
-  apiUrl: config.githubApiUrl,
-  webUrl: config.githubWebUrl,
-  logger,
-});
 
 export const setup = createSetup({ db: database.db, config, logger });
 try {

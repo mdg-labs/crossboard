@@ -1320,6 +1320,163 @@ describe("process entry", () => {
     expect(ticks).toEqual([0]);
   });
 
+  describe("background pause rule", () => {
+    const logLines = () =>
+      output
+        .join("")
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const suspendedInstallation = (suspended: boolean) => ({
+      id: 1,
+      accountLogin: "octocat",
+      accountId: 1,
+      accountType: "User" as const,
+      suspended,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    it("drops the background jobs of a suspended installation and applies the delivery that lifts the suspension", async () => {
+      stubEnv({ ...validEnv, ...githubEnv });
+      const entry = await start();
+      const { db } = entry.database;
+      db.insert(schema.installations).values(suspendedInstallation(true)).run();
+      const ran: string[] = [];
+      entry.jobs.register<string>("probe", (tag) => void ran.push(tag));
+      const send = (event: string, payload: object) => {
+        const body = JSON.stringify({ installation: { id: 1 }, ...payload });
+        return fetch(`http://127.0.0.1:${port}/webhooks/github`, {
+          method: "POST",
+          body,
+          headers: {
+            "Content-Type": "application/json",
+            "X-GitHub-Event": event,
+            "X-GitHub-Delivery": `delivery-${event}`,
+            "X-Hub-Signature-256": `sha256=${createHmac("sha256", githubEnv.GITHUB_WEBHOOK_SECRET).update(body).digest("hex")}`,
+          },
+        });
+      };
+      const flag = () =>
+        db
+          .select({ suspended: schema.installations.suspended })
+          .from(schema.installations)
+          .get()?.suspended;
+
+      entry.jobs.enqueue("probe", "while suspended", { installationId: 1 });
+      expect(
+        (
+          await send("issue_comment", {
+            action: "created",
+            issue: { node_id: "I_1" },
+          })
+        ).status,
+      ).toBe(202);
+      await vi.waitFor(() => {
+        expect(
+          logLines().filter((line) => line.msg === "background job dropped"),
+        ).toEqual([
+          expect.objectContaining({
+            job: "probe",
+            installationId: 1,
+            reason: "installation suspended",
+          }),
+          expect.objectContaining({
+            job: "webhook:issue_comment",
+            installationId: 1,
+            reason: "installation suspended",
+          }),
+        ]);
+      });
+      expect(ran).toEqual([]);
+      expect(flag()).toBe(true);
+
+      expect(
+        (
+          await send("installation", {
+            action: "unsuspend",
+            installation: {
+              id: 1,
+              account: { id: 1, login: "octocat" },
+              target_type: "User",
+              suspended_at: null,
+            },
+          })
+        ).status,
+      ).toBe(202);
+      await vi.waitFor(() => {
+        expect(flag()).toBe(false);
+      });
+
+      entry.jobs.enqueue("probe", "after unsuspend", { installationId: 1 });
+      await vi.waitFor(() => {
+        expect(ran).toEqual(["after unsuspend"]);
+      });
+    });
+
+    it("defers the background jobs of an installation below 10% of its budget until the reset", async () => {
+      stubEnv({
+        ...validEnv,
+        ...githubEnv,
+        GITHUB_APP_ID: APP_ID,
+        GITHUB_PRIVATE_KEY: APP_PRIVATE_KEY,
+        CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+        CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+      });
+      const fake = createFakeGithub();
+      fake.listen();
+      try {
+        const resetAt = new Date(Date.now() + 400).toISOString();
+        fake.server.use(
+          http.post(`${FAKE_API_URL}/graphql`, () =>
+            HttpResponse.json({
+              data: {
+                rateLimit: { cost: 1, remaining: 250, limit: 5000, resetAt },
+                repository: { issues: { totalCount: 0, nodes: [] } },
+              },
+            }),
+          ),
+        );
+        const entry = await start();
+        await entry.installations.graphql(
+          INSTALLATION_ID,
+          queries.openIssuesPage,
+          { owner: "octocat", name: "repo-1" },
+        );
+        const ran: string[] = [];
+        entry.jobs.register<string>("probe", (tag) => void ran.push(tag));
+
+        entry.jobs.enqueue("probe", "background", {
+          installationId: INSTALLATION_ID,
+        });
+        entry.jobs.enqueue("probe", "interactive", {
+          installationId: INSTALLATION_ID,
+          kind: "interactive",
+        });
+        await vi.waitFor(() => {
+          expect(ran).toEqual(["interactive"]);
+        });
+        expect(
+          logLines().filter((line) => line.msg === "background job paused"),
+        ).toEqual([
+          expect.objectContaining({
+            job: "probe",
+            installationId: INSTALLATION_ID,
+          }),
+        ]);
+
+        await vi.waitFor(
+          () => {
+            expect(ran).toEqual(["interactive", "background"]);
+          },
+          { timeout: 3_000 },
+        );
+      } finally {
+        fake.close();
+      }
+    });
+  });
+
   it.each(SIGNALS)(
     "closes the listener and the database and exits 0 on %s",
     async (signal) => {
