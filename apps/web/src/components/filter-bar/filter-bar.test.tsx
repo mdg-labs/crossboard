@@ -641,3 +641,103 @@ describe("keyboard shortcuts", () => {
     expect(keys).toEqual(expect.arrayContaining(["/", "j", "k", "o"]));
   });
 });
+
+describe("the filter input on a board", () => {
+  function stubBoard() {
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
+      const raw =
+        typeof input === "string" || input instanceof URL ? input : input.url;
+      const { pathname, searchParams } = new URL(raw, window.location.origin);
+      if (pathname === "/api/boards/7") {
+        return Response.json({
+          id: 7,
+          name: "Sprint",
+          baseFilter: "",
+          sort: "updated-desc",
+          subIssueMode: "collapsed",
+          showOther: false,
+          columns: [{ id: 70, name: "To do", filter: "" }],
+          createdAt: 1,
+          updatedAt: 1,
+        });
+      }
+      if (pathname === "/api/boards/7/cards") {
+        const q = searchParams.get("q") ?? "";
+        const cards = q === "label:bug" ? [issue(2)] : [issue(1), issue(2)];
+        return Response.json({
+          columns: [{ id: 70, name: "To do", count: cards.length, cards }],
+          warnings: [],
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  const requestedCards = (mock: ReturnType<typeof stubBoard>): string[] =>
+    mock.mock.calls
+      .map(([input]) => {
+        const raw =
+          typeof input === "string" || input instanceof URL ? input : input.url;
+        return new URL(raw, window.location.origin);
+      })
+      .filter((url) => url.pathname === "/api/boards/7/cards")
+      .map((url) => url.searchParams.get("q") ?? "");
+
+  it("stays on the board, sets ?q= and drops the list's sort", async () => {
+    const mock = stubBoard();
+    const history = renderApp("/b/7?sort=title-asc");
+    await screen.findByText("Issue number 1");
+
+    type("label:bug");
+    submit();
+
+    await waitFor(() =>
+      expect(screen.queryByText("Issue number 1")).toBeNull(),
+    );
+    expect(history.location.pathname).toBe("/b/7");
+    expect(history.location.search).toBe("?q=label%3Abug");
+    expect(requestedCards(mock)).toEqual(["", "label:bug"]);
+  });
+
+  it("clears ?q= from the board when the filter is emptied", async () => {
+    stubBoard();
+    const history = renderApp("/b/7?q=label%3Abug");
+    await screen.findByText("Issue number 2");
+    expect(filterInput().value).toBe("label:bug");
+
+    type("");
+    submit();
+
+    await waitFor(() =>
+      expect(screen.getByText("Issue number 1")).toBeTruthy(),
+    );
+    expect(history.location.pathname).toBe("/b/7");
+    expect(history.location.search).toBe("");
+  });
+
+  it("reloads the board when the same filter is submitted again", async () => {
+    const mock = stubBoard();
+    renderApp("/b/7?q=label%3Abug");
+    await screen.findByText("Issue number 2");
+
+    submit();
+
+    await waitFor(() =>
+      expect(requestedCards(mock)).toEqual(["label:bug", "label:bug"]),
+    );
+  });
+
+  it("still leaves the board editor for the list", async () => {
+    stubIssues(() => [issue(1)]);
+    const history = renderApp("/b/7/edit");
+    await screen.findByRole("combobox", { name: "Filter issues" });
+
+    type("label:bug");
+    submit();
+
+    await waitFor(() => expect(history.location.pathname).toBe("/"));
+    expect(history.location.search).toBe("?q=label%3Abug");
+  });
+});

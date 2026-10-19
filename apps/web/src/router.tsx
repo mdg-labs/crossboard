@@ -7,7 +7,9 @@ import {
   type RouterHistory,
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
+import { parseBoardSearch } from "@/lib/board-cards";
 import { parseIndexSearch } from "@/lib/issues";
+import { BoardRoute } from "@/routes/board";
 import { BoardEditRoute, BoardNewRoute } from "@/routes/board-edit";
 import { IndexRoute } from "@/routes/index";
 import { IssueRoute } from "@/routes/issue";
@@ -59,6 +61,13 @@ const boardNewRoute = createRoute({
   component: BoardNewRoute,
 });
 
+const boardRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/b/$boardId",
+  validateSearch: parseBoardSearch,
+  component: BoardRoute,
+});
+
 const boardEditRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/b/$boardId/edit",
@@ -88,6 +97,7 @@ const routeTree = rootRoute.addChildren([
     indexRoute,
     issueRoute,
     boardNewRoute,
+    boardRoute,
     boardEditRoute,
     settingsRoute,
   ]),
