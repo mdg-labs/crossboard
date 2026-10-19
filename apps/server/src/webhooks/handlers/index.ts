@@ -1,9 +1,14 @@
 import type { Logger } from "pino";
+import type { Access } from "../../access/index.js";
+import type { Allowlist } from "../../auth/sign-in/index.js";
 import type { Db } from "../../db/index.js";
 import type { Jobs } from "../../jobs/index.js";
 import type { Refetch } from "../../sync/refetch.js";
+import { createAuthorizationHandler } from "./authorization.js";
+import { createInstallationHandlers } from "./installation.js";
 import { createIssueHandlers } from "./issues.js";
 import { createLabelHandler } from "./label.js";
+import { createRepositoryHandler } from "./repository.js";
 
 /** What a handler is given about the delivery it applies. */
 export interface WebhookDelivery {
@@ -28,6 +33,10 @@ export interface WebhookHandlersOptions {
   jobs: Jobs;
   /** Removes and refetches issues by the SPEC §8.2 rules. */
   issues: Pick<Refetch, "refetch" | "remove">;
+  /** Recomputes a user's access (SPEC FR-8) after the events that can change it. */
+  access: Pick<Access, "compute">;
+  /** The allowlists in effect now, from which the active set is derived (SPEC FR-3). */
+  allowlist: Allowlist;
   /** How long a refetch waits for further deliveries about its issue; SPEC §6.2 says 5 s. */
   debounceMs?: number;
 }
@@ -43,5 +52,8 @@ export function createWebhookHandlers(
   return {
     ...createIssueHandlers(options),
     label: createLabelHandler(options.db),
+    ...createInstallationHandlers(options),
+    repository: createRepositoryHandler(options),
+    github_app_authorization: createAuthorizationHandler(options),
   };
 }

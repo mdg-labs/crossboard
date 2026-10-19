@@ -193,6 +193,8 @@ async function build(options: { debounceMs?: number } = {}) {
     db: database.db,
     jobs,
     issues: refetch,
+    access: { compute: () => Promise.resolve("skipped") },
+    allowlist: setup.allowlist,
     ...(options.debounceMs === undefined
       ? {}
       : { debounceMs: options.debounceMs }),

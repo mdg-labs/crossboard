@@ -202,6 +202,8 @@ const webhookHandlers = createWebhookHandlers({
   db: database.db,
   jobs,
   issues,
+  access,
+  allowlist: setup.allowlist,
 });
 
 const app = createApp({

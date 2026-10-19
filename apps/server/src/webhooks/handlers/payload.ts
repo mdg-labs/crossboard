@@ -28,3 +28,30 @@ export const labelPayload = z.looseObject({
   }),
   repository: node,
 });
+
+/** What recording an installation needs: the account it belongs to (SPEC FR-3). */
+export const installationCreatedPayload = z.looseObject({
+  installation: z.looseObject({
+    id: z.number().int(),
+    account: z.looseObject({ id: z.number().int(), login: z.string().min(1) }),
+    target_type: z.string(),
+    suspended_at: z.string().nullish(),
+  }),
+});
+
+export const repositoriesRemovedPayload = z.looseObject({
+  repositories_removed: z.array(node),
+});
+
+export const repositoryPayload = z.looseObject({
+  repository: z.looseObject({
+    node_id: z.string().min(1),
+    name: z.string().min(1),
+    owner: z.looseObject({ login: z.string().min(1) }),
+  }),
+});
+
+/** A `github_app_authorization` delivery names its user by `sender`; it has no installation. */
+export const authorizationPayload = z.looseObject({
+  sender: z.looseObject({ id: z.number().int() }),
+});
