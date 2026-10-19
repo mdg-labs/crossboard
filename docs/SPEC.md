@@ -312,7 +312,7 @@ packages/query/         @crossboard/query (no runtime dependencies)
 e2e/                    @crossboard/e2e: Playwright tests and the fake GitHub server
 ```
 
-`pnpm-workspace.yaml` lists `apps/*`, `packages/*` and `e2e`. Every package has the scripts `lint`, `typecheck`, `test` (and `build` where it builds). The root has `lint`, `typecheck`, `test`, `build`, `format:check` and `gate` (all of them in sequence); CI runs `pnpm gate` and the Docker build.
+`pnpm-workspace.yaml` lists `apps/*`, `packages/*` and `e2e`. Every package has the scripts `lint`, `typecheck`, `test` (and `build` where it builds), except `e2e`, which has `test:e2e` instead of `test`: CI runs it against the built image (§7.6), and the root `test` does not. The root has `lint`, `typecheck`, `test`, `build`, `format:check` and `gate` (all of them in sequence); CI runs `pnpm gate` and the Docker build.
 
 ### 7.3 Jobs
 The `jobs` interface has `enqueue(name, payload, { key?, delayMs? })` and `schedule(name, intervalMs)`. The v1 implementation is in-process: an async queue with per-installation concurrency (§6.1); a `key` deduplicates pending jobs (used for the 5 s refetch debounce). Jobs are not persisted. At startup the scheduler derives the work from DB state: repos `pending` or `syncing` are (re)synced; reconciliation and daily resync timers start.
