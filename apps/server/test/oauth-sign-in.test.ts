@@ -127,6 +127,7 @@ afterEach(() => {
 function build(env: Record<string, string> = {}) {
   const config: Config = loadConfig({
     ...validEnv,
+    CROSSBOARD_DATA_DIR: database.dir,
     ...githubApp,
     CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
     CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,

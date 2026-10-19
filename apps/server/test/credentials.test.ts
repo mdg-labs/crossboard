@@ -1,4 +1,16 @@
 import { eq } from "drizzle-orm";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   APP_CREDENTIALS_KEY,
@@ -14,20 +26,26 @@ import { githubEnv, validEnv } from "./helpers.js";
 
 let database: TestDatabase;
 let logs: string[];
+let dataDir: string;
 
 beforeEach(() => {
   database = createTestDatabase();
   logs = [];
+  dataDir = mkdtempSync(join(tmpdir(), "crossboard-setup-"));
 });
 
 afterEach(() => {
   database.cleanup();
+  rmSync(dataDir, { recursive: true, force: true });
 });
 
-const logger = () =>
-  createLogger("info", { write: (chunk) => logs.push(chunk) });
-const noGithub = () => loadConfig(validEnv);
-const withGithub = () => loadConfig({ ...validEnv, ...githubEnv });
+const logger = (level: "info" | "trace" = "info") =>
+  createLogger(level, { write: (chunk) => logs.push(chunk) });
+const env = () => ({ ...validEnv, CROSSBOARD_DATA_DIR: dataDir });
+const noGithub = () => loadConfig(env());
+const withGithub = () => loadConfig({ ...env(), ...githubEnv });
+const tokenFile = () => join(dataDir, "setup-token");
+const readToken = () => readFileSync(tokenFile(), "utf8").trim();
 
 const stored = {
   appId: "42",
@@ -110,7 +128,7 @@ describe("resolveCredentials", () => {
 });
 
 describe("setup token", () => {
-  it("is generated, logged at warn and stored only as an encrypted hash", () => {
+  it("is generated, written to a private file and stored only as an encrypted hash", () => {
     const setup = createSetup({
       db: database.db,
       config: noGithub(),
@@ -120,12 +138,16 @@ describe("setup token", () => {
     const token = setup.start();
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
+    expect(readToken()).toBe(token);
+    expect(statSync(tokenFile()).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dataDir)).toEqual(["setup-token"]);
+
     const record = JSON.parse(logs.join("").trim()) as {
       level: number;
-      setupToken: string;
+      msg: string;
     };
     expect(record.level).toBe(40);
-    expect(record.setupToken).toBe(token);
+    expect(record.msg).toContain(tokenFile());
 
     const row = tokenRow();
     expect(row?.valueEnc.startsWith("v1:")).toBe(true);
@@ -133,6 +155,19 @@ describe("setup token", () => {
     expect(setup.verify(token ?? "")).toBe(true);
     expect(setup.verify("wrong")).toBe(false);
     expect(setup.verify("")).toBe(false);
+  });
+
+  it("is written to no log line at any level", () => {
+    const setup = createSetup({
+      db: database.db,
+      config: noGithub(),
+      logger: logger("trace"),
+    });
+    const token = setup.start() ?? "";
+    expect(token).not.toBe("");
+    expect(logs.length).toBeGreaterThan(0);
+    expect(logs.join("")).not.toContain(token);
+    expect(logs.join("")).not.toContain("setupToken");
   });
 
   it("is replaced by a new one at the next start", () => {
@@ -145,6 +180,8 @@ describe("setup token", () => {
     const restarted = createSetup(options);
     const second = restarted.start() ?? "";
     expect(second).not.toBe(first);
+    expect(readToken()).toBe(second);
+    expect(statSync(tokenFile()).mode & 0o777).toBe(0o600);
     expect(restarted.verify(first)).toBe(false);
     expect(restarted.verify(second)).toBe(true);
     expect(
@@ -162,6 +199,62 @@ describe("setup token", () => {
     expect(setup.start()).toBeNull();
     expect(tokenRow()).toBeUndefined();
     expect(logs).toEqual([]);
+    expect(existsSync(tokenFile())).toBe(false);
+  });
+
+  it("removes a stale file at a start with environment credentials", () => {
+    writeFileSync(tokenFile(), "stale\n");
+    createSetup({
+      db: database.db,
+      config: withGithub(),
+      logger: logger(),
+    }).start();
+    expect(existsSync(tokenFile())).toBe(false);
+  });
+
+  it("removes a stale file at a start with stored credentials", () => {
+    store(JSON.stringify(stored));
+    writeFileSync(tokenFile(), "stale\n");
+    createSetup({
+      db: database.db,
+      config: noGithub(),
+      logger: logger(),
+    }).start();
+    expect(existsSync(tokenFile())).toBe(false);
+  });
+
+  it("removes the file when setup completes", () => {
+    const setup = createSetup({
+      db: database.db,
+      config: noGithub(),
+      logger: logger(),
+    });
+    setup.start();
+    expect(existsSync(tokenFile())).toBe(true);
+    expect(
+      setup.complete({
+        id: 7,
+        slug: "crossboard-test",
+        clientId: "Iv1.test",
+        clientSecret: "client-secret",
+        pem: "private-key",
+        webhookSecret: "webhook-secret",
+      } as Parameters<typeof setup.complete>[0]),
+    ).toBe(true);
+    expect(existsSync(tokenFile())).toBe(false);
+    expect(setup.isRequired()).toBe(false);
+  });
+
+  it("fails the start, without logging a token, when the file cannot be written", () => {
+    mkdirSync(tokenFile());
+    const setup = createSetup({
+      db: database.db,
+      config: noGithub(),
+      logger: logger("trace"),
+    });
+    expect(() => setup.start()).toThrow();
+    expect(readdirSync(dataDir)).toEqual(["setup-token"]);
+    expect(logs.join("")).not.toMatch(/[A-Za-z0-9_-]{43}/);
   });
 
   it("is not generated when stored credentials exist", () => {

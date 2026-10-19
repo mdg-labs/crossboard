@@ -1,4 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
@@ -762,26 +769,21 @@ describe("process entry", () => {
     });
   });
 
-  it("gates a fresh instance behind the setup token it logs at start", async () => {
+  it("gates a fresh instance behind the setup token it writes to the data directory", async () => {
     stubEnv(validEnv);
     await start();
 
-    const logged = output
+    const file = join(dataDir, "setup-token");
+    const token = readFileSync(file, "utf8").trim();
+    expect(token).not.toBe("");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    const lines = output
       .join("")
       .trim()
       .split("\n")
-      .map(
-        (line) =>
-          JSON.parse(line) as {
-            level: number;
-            msg: string;
-            setupToken?: string;
-          },
-      )
-      .find((record) => record.setupToken !== undefined);
-    expect(logged?.level).toBe(40);
-    const token = logged?.setupToken ?? "";
-    expect(token).not.toBe("");
+      .map((line) => JSON.parse(line) as { level: number; msg: string });
+    expect(lines.find((line) => line.msg.includes(file))?.level).toBe(40);
+    expect(output.join("")).not.toContain(token);
 
     const base = `http://127.0.0.1:${port}`;
     const redirect = await fetch(`${base}/api/issues`, { redirect: "manual" });
@@ -811,6 +813,15 @@ describe("process entry", () => {
     expect(rowsOf("app_config")).toBe(1);
   });
 
+  it("logs a fatal without the token and exits when the setup token file cannot be written", async () => {
+    stubEnv(validEnv);
+    mkdirSync(join(dataDir, "setup-token"));
+    await expect(import("../src/index.js")).rejects.toThrow("process.exit(1)");
+    const record = JSON.parse(output.join("").trim().split("\n").pop() ?? "");
+    expect(record.level).toBe(60);
+    expect(output.join("")).not.toMatch(/[A-Za-z0-9_-]{43}/);
+  });
+
   it("serves normally and logs no setup token when the environment has the App credentials", async () => {
     stubEnv({ ...validEnv, ...githubEnv });
     await start();
@@ -819,6 +830,7 @@ describe("process entry", () => {
     });
     expect(response.status).toBe(401);
     expect(output.join("")).not.toContain("setupToken");
+    expect(existsSync(join(dataDir, "setup-token"))).toBe(false);
     expect(rowsOf("app_config")).toBe(0);
   });
 
