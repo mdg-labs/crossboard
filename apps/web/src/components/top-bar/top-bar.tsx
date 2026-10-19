@@ -1,10 +1,8 @@
-import { RefreshCwIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { FilterBar } from "@/components/filter-bar/filter-bar";
-import { Toolbar, ToolbarButton, ToolbarGroup } from "@/components/ui/toolbar";
+import { Toolbar, ToolbarGroup } from "@/components/ui/toolbar";
+import { SyncStatus } from "@/components/top-bar/sync-status";
 import { UserMenu } from "@/components/top-bar/user-menu";
 import { ViewSwitcher } from "@/components/view-switcher/view-switcher";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "@/components/ui/tooltip";
 
 export function TopBar(): React.ReactElement {
   return (
@@ -17,24 +15,7 @@ export function TopBar(): React.ReactElement {
           <ViewSwitcher />
         </ToolbarGroup>
         <ToolbarGroup className="col-start-3 row-start-1">
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <ToolbarButton
-                  render={
-                    <Button
-                      aria-label="Sync status"
-                      size="icon-sm"
-                      variant="ghost"
-                    />
-                  }
-                />
-              }
-            >
-              <RefreshCwIcon aria-hidden="true" />
-            </TooltipTrigger>
-            <TooltipPopup>Sync status</TooltipPopup>
-          </Tooltip>
+          <SyncStatus />
           <UserMenu />
         </ToolbarGroup>
       </Toolbar>

@@ -30,7 +30,12 @@ import {
   protectStateChanges,
 } from "../src/security/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
-import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
+import {
+  githubEnv,
+  validEnv,
+  unusedInstallations,
+  unusedJobs,
+} from "./helpers.js";
 import { addUser, signIn, createTestAccess } from "./sign-in.js";
 
 const ORIGIN = validEnv.CROSSBOARD_PUBLIC_URL;
@@ -75,6 +80,7 @@ function build(env: Record<string, string> = { ...validEnv, ...githubEnv }) {
     db: database.db,
     github,
     installations: unusedInstallations,
+    jobs: unusedJobs,
     version: "1.0.0",
     webRoot,
     setup,
@@ -462,7 +468,7 @@ describe("CSRF protection of state-changing routes", () => {
       method: "POST",
       body: "{}",
     });
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
   });
 });
 

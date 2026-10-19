@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Logger } from "pino";
 import { z } from "zod";
+import { purgeRepos } from "../access/purge.js";
 import { schema, type Db } from "../db/index.js";
 import type { InstallationClient } from "../github/index.js";
 import { queries } from "../github/queries/index.js";
@@ -9,6 +10,8 @@ import type { Jobs } from "../jobs/index.js";
 const { installations, repos } = schema;
 
 export const DISCOVERY_JOB = "sync.discover";
+export const DISCOVERY_SCHEDULE_JOB = "sync.discover-all";
+export const DISCOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const PAGE_SIZE = 100;
 /** How many repositories one state query covers (SPEC §5.3). */
@@ -16,7 +19,7 @@ export const REPOSITORY_STATES_BATCH = 25;
 const ROUTE = "GET /installation/repositories";
 // An ETag no response carries, so a page that has no stored ETag is fetched
 // through the conditional route and yields the ETag to keep.
-const NO_ETAG = '"crossboard-no-etag"';
+export const NO_ETAG = '"crossboard-no-etag"';
 // Keeps one statement under SQLite's bound-parameter limit.
 const CHUNK = 200;
 
@@ -30,6 +33,11 @@ const pageSchema = z.object({
       private: z.boolean(),
     }),
   ),
+});
+
+const verifiedPageSchema = z.object({
+  total_count: z.number(),
+  repositories: z.array(z.object({ node_id: z.string() })),
 });
 
 export const repositoryStateSchema = z.object({
@@ -80,7 +88,19 @@ export interface Discovery {
    * reason, repos without open issues are `ready`, the rest stay `pending`
    * with their open-issue count. Repos already past `pending` keep their
    * state; one the response carries no state for is recorded `pending` and
-   * left as it is. Resolves to `skipped` for an installation that is unknown,
+   * left as it is. A repo that a sync or a webhook moved on while the GitHub
+   * calls ran keeps its state. A stored repo of the installation that the
+   * listing does not contain is purged (SPEC §8.2) only when a second listing
+   * of the installation's repositories, read after the first, is verified
+   * complete (every page reports the same `total_count` and the distinct ids
+   * equal it) and also lacks it, since a listing read page by page can skip a
+   * repo that is still installed; an error or an incomplete second listing
+   * keeps every such repo. Readability by the installation token is not
+   * evidence: it reads any public repository. A repo stored after the first
+   * listing began is never purged, since a computation may record a repo the
+   * listing predates. This removes a repo that an access computation
+   * re-created after a purge.
+   * Resolves to `skipped` for an installation that is unknown,
    * suspended or no longer active, checked again before anything is written,
    * since the GitHub calls can outlast a purge. A GitHub failure, including a
    * GraphQL error such as `NOT_FOUND` for a repo deleted since the listing,
@@ -191,6 +211,42 @@ export function createDiscovery({
     return outcomes;
   }
 
+  /**
+   * Lists the installation's repositories again, without ETags, and returns
+   * their node ids only when the listing is complete: every page reports the
+   * same `total_count` and the distinct ids seen equal it. Anything else
+   * throws.
+   */
+  async function listVerified(installationId: number): Promise<Set<string>> {
+    const ids = new Set<string>();
+    let total: number | undefined;
+    for (let page = 1; ; page++) {
+      if (total !== undefined && page > Math.ceil(total / PAGE_SIZE) + 1) {
+        throw new Error("the repository listing does not end");
+      }
+      const answer = await github.restConditional(
+        installationId,
+        ROUTE,
+        NO_ETAG,
+        { per_page: PAGE_SIZE, page },
+      );
+      if (answer.notModified) {
+        throw new Error("GitHub answered 304 to a request without an ETag");
+      }
+      const parsed = verifiedPageSchema.parse(answer.data);
+      if (total !== undefined && parsed.total_count !== total) {
+        throw new Error("the repository count changed while listing");
+      }
+      total = parsed.total_count;
+      for (const entry of parsed.repositories) ids.add(entry.node_id);
+      if (parsed.repositories.length < PAGE_SIZE || ids.size >= total) break;
+    }
+    if (ids.size !== total) {
+      throw new Error("the repository listing is incomplete");
+    }
+    return ids;
+  }
+
   return {
     async discover(installationId) {
       const installation = db
@@ -210,6 +266,7 @@ export function createDiscovery({
         return "skipped";
       }
 
+      const startedAt = now();
       const listed = await list(installationId);
       const stored = new Map(
         chunks(listed, CHUNK).flatMap((part) =>
@@ -236,8 +293,35 @@ export function createDiscovery({
         }),
       );
 
+      const listedIds = new Set(listed.map((repo) => repo.nodeId));
+      const candidates = db
+        .select({ id: repos.id, createdAt: repos.createdAt })
+        .from(repos)
+        .where(eq(repos.installationId, installationId))
+        .all()
+        .filter((row) => !listedIds.has(row.id) && row.createdAt <= startedAt)
+        .map((row) => row.id);
+      const gone = new Set<string>();
+      if (candidates.length > 0) {
+        try {
+          const again = await listVerified(installationId);
+          for (const id of candidates) if (!again.has(id)) gone.add(id);
+        } catch (error) {
+          logger.warn(
+            { err: error, installationId },
+            "repositories missing from the listing could not be confirmed removed and were kept",
+          );
+        }
+      }
+
       const at = now();
-      const counts = { created: 0, skipped: 0, ready: 0, pending: 0 };
+      const counts = {
+        created: 0,
+        skipped: 0,
+        ready: 0,
+        pending: 0,
+        purged: 0,
+      };
       const written = db.transaction((tx) => {
         const current = tx
           .select({ suspended: installations.suspended })
@@ -251,6 +335,22 @@ export function createDiscovery({
         ) {
           return false;
         }
+        counts.purged = purgeRepos(
+          tx,
+          installationId,
+          tx
+            .select({ id: repos.id, createdAt: repos.createdAt })
+            .from(repos)
+            .where(eq(repos.installationId, installationId))
+            .all()
+            .filter(
+              (row) =>
+                gone.has(row.id) &&
+                !listedIds.has(row.id) &&
+                row.createdAt <= startedAt,
+            )
+            .map((row) => row.id),
+        );
         for (const repo of listed) {
           const identity = {
             installationId,
@@ -260,7 +360,7 @@ export function createDiscovery({
             updatedAt: at,
           };
           const outcome = outcomes.get(repo.nodeId);
-          const fields =
+          const decided =
             outcome === undefined
               ? {}
               : outcome.state === "skipped"
@@ -276,6 +376,7 @@ export function createDiscovery({
                       openIssueCount: 0,
                       lastFullSyncAt: at,
                       reconcileSince: new Date(at).toISOString(),
+                      restEtag: null,
                     }
                   : {
                       syncState: "pending" as const,
@@ -284,6 +385,15 @@ export function createDiscovery({
                     };
           if (outcome !== undefined) counts[outcome.state]++;
           if (stored.has(repo.nodeId)) {
+            // The outcome was decided from the state read before the GitHub
+            // calls; a repo a sync or a webhook moved on since keeps its state.
+            const state = tx
+              .select({ syncState: repos.syncState })
+              .from(repos)
+              .where(eq(repos.id, repo.nodeId))
+              .get()?.syncState;
+            const fields =
+              state === "pending" || state === "skipped" ? decided : {};
             try {
               tx.update(repos)
                 .set({ ...identity, ...fields })
@@ -315,7 +425,7 @@ export function createDiscovery({
                 openIssueCount: 0,
                 createdAt: at,
                 ...identity,
-                ...fields,
+                ...decided,
               })
               .onConflictDoNothing()
               .run();
@@ -366,12 +476,52 @@ export function enqueueDiscovery(jobs: Jobs, installationId: number): boolean {
   );
 }
 
-/** Registers the job that runs {@link Discovery.discover} for one installation. */
-export function registerDiscoveryJob(jobs: Jobs, discovery: Discovery): void {
+/**
+ * Registers the job that runs {@link Discovery.discover} for one installation.
+ * A run that fails is logged at `warn` with the installation id and not
+ * thrown: the scheduled discovery of {@link registerDiscoverySchedule} runs it
+ * again.
+ */
+export function registerDiscoveryJob(
+  jobs: Jobs,
+  discovery: Discovery,
+  logger: Logger,
+): void {
   jobs.register<{ installationId: number }>(
     DISCOVERY_JOB,
     async ({ installationId }) => {
-      await discovery.discover(installationId);
+      try {
+        await discovery.discover(installationId);
+      } catch (error) {
+        logger.warn(
+          { err: error, installationId },
+          "repository discovery failed; it runs again at the next scheduled discovery",
+        );
+      }
     },
   );
+}
+
+/**
+ * Registers the job that enqueues discovery for every active, non-suspended
+ * installation, and schedules it every `intervalMs` (SPEC §6.1), so an
+ * installation whose discovery failed, or that a restart or an access
+ * computation did not reach, is discovered again within a day.
+ */
+export function registerDiscoverySchedule(
+  jobs: Jobs,
+  db: Pick<Db, "select">,
+  isActive: (installationId: number) => boolean,
+  intervalMs: number = DISCOVERY_INTERVAL_MS,
+): void {
+  jobs.register(DISCOVERY_SCHEDULE_JOB, () => {
+    for (const { id } of db
+      .select({ id: installations.id })
+      .from(installations)
+      .where(eq(installations.suspended, false))
+      .all()) {
+      if (isActive(id)) enqueueDiscovery(jobs, id);
+    }
+  });
+  jobs.schedule(DISCOVERY_SCHEDULE_JOB, intervalMs);
 }

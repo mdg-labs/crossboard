@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { Logger } from "pino";
 import { z } from "zod";
 import { schema, type Db } from "../db/index.js";
@@ -16,7 +16,7 @@ import {
   type IssueData,
   type IssueNode,
 } from "./issue-data.js";
-import { createRemoval, type Removal } from "./remove.js";
+import { createRemoval, type Removal, type RemovalWatch } from "./remove.js";
 import { writeRelations } from "./relations.js";
 
 const { installations, issues, repos } = schema;
@@ -26,6 +26,7 @@ export const REFETCH_BATCH = 50;
 
 const nodeSchema = issueNodeSchema.extend({
   state: z.enum(["OPEN", "CLOSED"]),
+  repository: z.object({ id: z.string() }),
 });
 
 type FetchedIssue = z.infer<typeof nodeSchema>;
@@ -69,8 +70,14 @@ export interface Refetch extends Removal {
    * left alone. A GitHub failure throws; whatever was fetched before it stays.
    * Resolves to the GraphQL cost of every query it sent, including those of the
    * refetches its removals needed.
+   *
+   * `via`, an installation id, fetches the ids that are not synced yet (an
+   * issue just opened or reopened) with that installation's token, when it is
+   * active. One that is open is adopted into the repo GitHub reports for it,
+   * when that repo is `ready` and belongs to `via`; a repo that is not ready
+   * has its initial sync to pick it up, and any other result is left alone.
    */
-  refetch(ids: readonly string[]): Promise<number>;
+  refetch(ids: readonly string[], via?: number): Promise<number>;
 }
 
 /**
@@ -136,7 +143,46 @@ export function createRefetch({
     }
   }
 
-  async function refetch(requested: readonly string[]): Promise<number> {
+  /** The ready repo with this node id, when the installation can read it. */
+  function readyRepo(
+    repoId: string,
+    installationId: number,
+  ): Known | undefined {
+    return db
+      .select({
+        repoId: repos.id,
+        owner: repos.owner,
+        name: repos.name,
+        installationId: repos.installationId,
+      })
+      .from(repos)
+      .where(
+        and(
+          eq(repos.id, repoId),
+          eq(repos.syncState, "ready"),
+          eq(repos.installationId, installationId),
+        ),
+      )
+      .get();
+  }
+
+  async function refetch(
+    requested: readonly string[],
+    via?: number,
+  ): Promise<number> {
+    const watch = removal.watch();
+    try {
+      return await run(requested, via, watch);
+    } finally {
+      watch.stop();
+    }
+  }
+
+  async function run(
+    requested: readonly string[],
+    via: number | undefined,
+    watch: RemovalWatch,
+  ): Promise<number> {
     let total = 0;
     const ids = [...new Set(requested)];
     const known = new Map<string, Known>();
@@ -170,6 +216,20 @@ export function createRefetch({
         id,
       ]);
     }
+    const unknown = ids.filter((id) => !known.has(id));
+    if (via !== undefined && unknown.length > 0) {
+      if (usable(via)) {
+        byInstallation.set(via, [
+          ...(byInstallation.get(via) ?? []),
+          ...unknown,
+        ]);
+      } else {
+        logger.debug(
+          { installationId: via },
+          "issue refetch skipped: the installation is not active",
+        );
+      }
+    }
 
     // Everything is fetched before anything is written, so a failure leaves
     // what is stored as it was.
@@ -188,7 +248,12 @@ export function createRefetch({
       for (const batch of chunks(group, REFETCH_BATCH)) {
         for (const [id, node] of await fetchNodes(send, batch)) {
           const row = known.get(id);
-          if (row === undefined) continue;
+          if (row === undefined) {
+            if (node === null || node.state === "CLOSED") continue;
+            const repo = readyRepo(node.repository.id, installationId);
+            if (repo !== undefined) fetchedOpen.push({ known: repo, node });
+            continue;
+          }
           if (node === null) gone.push(id);
           else if (node.state === "CLOSED") closed.push(id);
           else fetchedOpen.push({ known: row, node });
@@ -206,11 +271,20 @@ export function createRefetch({
       );
     }
 
-    if (open.length > 0) {
+    // A removal that committed while the requests were in flight wins: what was
+    // fetched may predate it. Nothing awaits between this and the write.
+    const stored = open.filter((entry) => !watch.removed.has(entry.node.id));
+    if (stored.length < open.length) {
+      logger.debug(
+        { issues: open.length - stored.length },
+        "issue refetch skipped issues removed while it was in flight",
+      );
+    }
+    if (stored.length > 0) {
       const at = now();
       db.transaction((tx) => {
         const byRepo = new Map<string, { known: Known; data: IssueData[] }>();
-        for (const entry of open) {
+        for (const entry of stored) {
           const group = byRepo.get(entry.known.repoId) ?? {
             known: entry.known,
             data: [],

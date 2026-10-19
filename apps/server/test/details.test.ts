@@ -15,7 +15,7 @@ import {
 import { DETAILS_MAX_AGE_MS } from "../src/issues/index.js";
 import { createLogger } from "../src/logger.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
-import { githubEnv, validEnv } from "./helpers.js";
+import { githubEnv, validEnv, unusedJobs } from "./helpers.js";
 import { addUser, createTestAccess, signIn } from "./sign-in.js";
 
 let dir: string;
@@ -148,6 +148,7 @@ function build(client: Pick<InstallationClient, "budgets" | "graphql">) {
     appSecret: config.appSecret,
     publicUrl: config.publicUrl,
     installations: client,
+    jobs: unusedJobs,
   });
 }
 
@@ -626,6 +627,19 @@ describe("GET /api/issues/:owner/:repo/:number/details", () => {
       const { cookie } = setupOne();
 
       expect((await details(build(fake.client), cookie)).status).toBe(200);
+    });
+
+    it("fetches at 5% remaining, where background jobs are already paused", async () => {
+      const fake = fakeInstallations();
+      fake.state.budget = {
+        remaining: 250,
+        limit: 5000,
+        resetAt: Date.now() + 60_000,
+      };
+      const { cookie } = setupOne();
+
+      expect((await details(build(fake.client), cookie)).status).toBe(200);
+      expect(fake.calls).toHaveLength(1);
     });
 
     it("fetches when the reported budget has already reset", async () => {

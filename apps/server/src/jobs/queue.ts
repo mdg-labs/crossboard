@@ -18,6 +18,17 @@ export type JobHandler<P = unknown> = (
   context: JobContext,
 ) => void | Promise<void>;
 
+/** What the pause rule decides for a background job that is about to start. */
+export type PauseDecision =
+  | { action: "run" }
+  | { action: "drop"; reason: string }
+  | { action: "defer"; delayMs: number; reason: string };
+
+export type PauseRule = (job: {
+  name: string;
+  installationId: number;
+}) => PauseDecision;
+
 export interface EnqueueOptions {
   /** A job whose key matches a pending job of the same name is dropped. */
   key?: string;
@@ -32,6 +43,11 @@ export interface JobsOptions {
   logger: Logger;
   perInstallationLimit?: number;
   overallLimit?: number;
+  /**
+   * Asked for each background job with an installation id before it starts. A
+   * rule that throws defers the job, so a failure never lets it run.
+   */
+  pause?: PauseRule;
 }
 
 export interface Jobs {
@@ -54,16 +70,22 @@ interface QueuedJob {
   dedupeKey: string | undefined;
   scheduled: boolean;
   timer: NodeJS.Timeout | undefined;
+  deferred: boolean;
 }
 
 export const PER_INSTALLATION_LIMIT = 2;
 export const OVERALL_LIMIT = 4;
+/** How long a job waits to be checked again when the pause rule failed. */
+export const PAUSE_RETRY_MS = 30_000;
+// The longest delay a timer accepts.
+const MAX_TIMER_MS = 2_147_483_647;
 
 export function createJobs(options: JobsOptions): Jobs {
   const { logger } = options;
   const perInstallationLimit =
     options.perInstallationLimit ?? PER_INSTALLATION_LIMIT;
   const overallLimit = options.overallLimit ?? OVERALL_LIMIT;
+  const { pause } = options;
 
   const handlers = new Map<string, JobHandler>();
   const schedules = new Map<
@@ -89,6 +111,25 @@ export function createJobs(options: JobsOptions): Jobs {
     );
   }
 
+  function decide(job: QueuedJob): PauseDecision {
+    const { installationId, kind } = job.context;
+    if (pause === undefined || kind !== "background") return { action: "run" };
+    if (installationId === undefined) return { action: "run" };
+    try {
+      return pause({ name: job.name, installationId });
+    } catch (error) {
+      logger.warn(
+        { err: error, job: job.name, installationId },
+        "the pause rule failed; the job is checked again later",
+      );
+      return {
+        action: "defer",
+        delayMs: PAUSE_RETRY_MS,
+        reason: "pause rule failed",
+      };
+    }
+  }
+
   function pump(): void {
     if (!started || stopped) return;
     for (let index = 0; index < waiting.length;) {
@@ -97,8 +138,35 @@ export function createJobs(options: JobsOptions): Jobs {
         index += 1;
         continue;
       }
+      const decision = decide(job);
+      if (decision.action === "run") {
+        waiting.splice(index, 1);
+        run(job);
+        continue;
+      }
       waiting.splice(index, 1);
-      run(job);
+      const log = {
+        job: job.name,
+        installationId: job.context.installationId,
+        key: job.context.key,
+        reason: decision.reason,
+      };
+      if (decision.action === "drop") {
+        pending.delete(job);
+        if (job.dedupeKey !== undefined) pendingKeys.delete(job.dedupeKey);
+        logger.info(log, "background job dropped");
+      } else {
+        job.deferred = true;
+        job.timer = setTimeout(
+          () => release(job),
+          Math.min(Math.max(decision.delayMs, 1), MAX_TIMER_MS),
+        );
+        job.timer.unref();
+        logger.info(
+          { ...log, delayMs: decision.delayMs },
+          "background job paused",
+        );
+      }
     }
   }
 
@@ -107,6 +175,12 @@ export function createJobs(options: JobsOptions): Jobs {
     if (job.dedupeKey !== undefined) pendingKeys.delete(job.dedupeKey);
     const { installationId } = job.context;
     if (job.scheduled) runningScheduled.add(job.name);
+    if (job.deferred) {
+      logger.info(
+        { job: job.name, installationId, key: job.context.key },
+        "background job resumed",
+      );
+    }
     if (installationId !== undefined) {
       runningWithInstallation += 1;
       runningInstallations.set(
@@ -188,6 +262,7 @@ export function createJobs(options: JobsOptions): Jobs {
       dedupeKey,
       scheduled,
       timer: undefined,
+      deferred: false,
       context: {
         name,
         kind: enqueueOptions.kind ?? "background",

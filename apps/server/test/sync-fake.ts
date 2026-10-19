@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { http, HttpResponse } from "msw";
 import { FAKE_API_URL } from "./github-fake.js";
 
@@ -23,6 +24,8 @@ export interface FakeIssue {
   repo: string;
   number: number;
   title?: string;
+  /** GitHub's `updated_at`, which the REST issue list filters and sorts by. */
+  updatedAt?: string;
   /** Defaults to open; a closed issue is not returned by the open-issues pages. */
   state?: "OPEN" | "CLOSED";
   labels?: FakeLabel[];
@@ -49,6 +52,8 @@ export interface FakeRepo {
   issuesEnabled?: boolean;
   /** Every issue of the repo, in the order GitHub returns them. */
   issues: FakeIssue[];
+  /** Pull requests, which the REST issue list returns beside the issues. */
+  pulls?: { id: string; number: number; updatedAt: string }[];
 }
 
 export const PAGE = 100;
@@ -86,20 +91,22 @@ const fakeLabel = (label: FakeLabel) => ({
 
 export const isOpen = (issue: FakeIssue) => (issue.state ?? "OPEN") === "OPEN";
 
-export const fakeNode = (issue: FakeIssue, withState = false) => {
+export const fakeNode = (issue: FakeIssue, withState = false, repoId = "") => {
   const labels = issue.labels ?? [];
   const assignees = issue.assignees ?? [];
   const blockedBy = issue.blockedBy ?? [];
   const blocking = issue.blocking ?? [];
   return {
-    ...(withState ? { state: issue.state ?? "OPEN" } : {}),
+    ...(withState
+      ? { state: issue.state ?? "OPEN", repository: { id: repoId } }
+      : {}),
     id: issue.id,
     databaseId: 1000 + issue.number,
     number: issue.number,
     title: issue.title ?? `Issue ${String(issue.number)}`,
     url: `https://github.test/${issue.repo}/issues/${String(issue.number)}`,
     createdAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-02-01T00:00:00Z",
+    updatedAt: issue.updatedAt ?? "2026-02-01T00:00:00Z",
     author: { login: "octocat" },
     issueType: issue.type ?? null,
     milestone: issue.milestone ?? null,
@@ -135,6 +142,14 @@ export interface FakeRequest {
   installation: number;
 }
 
+/** What the fake received for one REST issue list request. */
+export interface FakeRestRequest {
+  repo: string;
+  params: Record<string, string>;
+  ifNoneMatch: string | null;
+  installation: number;
+}
+
 export const installationOf = (request: Request): number =>
   Number(
     (request.headers.get("authorization") ?? "").replace(
@@ -153,9 +168,16 @@ export function createFakeSyncGithub() {
     /** Issues a lookup by id finds that the repo's pages leave out. */
     hidden: [] as FakeIssue[],
     requests: [] as FakeRequest[],
+    restRequests: [] as FakeRestRequest[],
+    /** Fails every REST issue list request for which it returns a status. */
+    restFailWith: undefined as
+      ((request: FakeRestRequest) => number | undefined) | undefined,
     /** Fails every GraphQL request for which it returns a status. */
     failWith: undefined as
       ((request: FakeRequest) => number | undefined) | undefined,
+    /** Holds each issue lookup's answer, read when it arrived, until this settles. */
+    holdIssueLookup: undefined as
+      ((request: FakeRequest) => Promise<void>) | undefined,
   };
 
   const tokens = http.post(
@@ -257,8 +279,11 @@ export function createFakeSyncGithub() {
           ])
           .find((entry) => entry.issue.id === id);
         if (found === undefined) missing.push(index);
-        return found === undefined ? null : fakeNode(found.issue, true);
+        return found === undefined
+          ? null
+          : fakeNode(found.issue, true, found.repo.id);
       });
+      await world.holdIssueLookup?.(seen);
       // GitHub answers with the node `null` and a NOT_FOUND entry per missing id.
       return HttpResponse.json({
         data: { rateLimit, nodes },
@@ -319,17 +344,76 @@ export function createFakeSyncGithub() {
     );
   });
 
+  // GitHub's issue list for a repo: issues and pull requests updated since a
+  // time, oldest first, with an ETag over the page and a 304 for a match.
+  const issueList = http.get(
+    `${FAKE_API_URL}/repos/:owner/:repo/issues`,
+    ({ request, params }) => {
+      const url = new URL(request.url);
+      const query = Object.fromEntries(url.searchParams);
+      const name = `${String(params.owner)}/${String(params.repo)}`;
+      const seen: FakeRestRequest = {
+        repo: name,
+        params: query,
+        ifNoneMatch: request.headers.get("if-none-match"),
+        installation: installationOf(request),
+      };
+      world.restRequests.push(seen);
+      const status = world.restFailWith?.(seen);
+      if (status !== undefined) {
+        return HttpResponse.json({ message: "boom" }, { status });
+      }
+      const repo = world.repos.find((entry) => entry.name === name);
+      if (repo === undefined) {
+        return HttpResponse.json({ message: "Not Found" }, { status: 404 });
+      }
+      const since = Date.parse(query.since ?? "1970-01-01T00:00:00Z");
+      const size = Number(query.per_page ?? "30");
+      const page = Number(query.page ?? "1");
+      const listed = [
+        ...repo.issues.map((entry) => ({
+          node_id: entry.id,
+          number: entry.number,
+          state: (entry.state ?? "OPEN").toLowerCase(),
+          updated_at: entry.updatedAt ?? "2026-02-01T00:00:00Z",
+        })),
+        ...(repo.pulls ?? []).map((entry) => ({
+          node_id: entry.id,
+          number: entry.number,
+          state: "open",
+          updated_at: entry.updatedAt,
+          pull_request: {
+            url: `https://api.github.test/pulls/${String(entry.number)}`,
+          },
+        })),
+      ]
+        .filter((entry) => Date.parse(entry.updated_at) >= since)
+        .sort((a, b) => Date.parse(a.updated_at) - Date.parse(b.updated_at));
+      const body = listed.slice((page - 1) * size, page * size);
+      const etag = `"${createHash("sha1").update(JSON.stringify(body)).digest("hex")}"`;
+      if (seen.ifNoneMatch === etag) {
+        return new HttpResponse(null, { status: 304, headers: { etag } });
+      }
+      return HttpResponse.json(body, { headers: { etag } });
+    },
+  );
+
   return {
     world,
-    /** The token endpoint, which names each installation's token for it, and the GraphQL endpoint. */
-    handlers: [tokens, graphql],
+    /** The token endpoint, which names each installation's token for it, the GraphQL endpoint and the REST issue list. */
+    handlers: [tokens, graphql, issueList],
     /** The GraphQL endpoint alone, for a test whose other handlers issue the tokens. */
     graphql,
+    /** The REST issue list alone. */
+    issueList,
     reset: () => {
       world.repos = [];
       world.hidden = [];
       world.requests = [];
+      world.restRequests = [];
+      world.restFailWith = undefined;
       world.failWith = undefined;
+      world.holdIssueLookup = undefined;
     },
     requestsFor: (name: string) =>
       world.requests.filter((entry) => entry.name === name),

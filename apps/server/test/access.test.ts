@@ -43,7 +43,12 @@ import {
 } from "./access.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { createFakeGithub, FAKE_API_URL, FAKE_WEB_URL } from "./github-fake.js";
-import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
+import {
+  githubEnv,
+  validEnv,
+  unusedInstallations,
+  unusedJobs,
+} from "./helpers.js";
 import { addUser, signIn } from "./sign-in.js";
 
 const APP_SECRET = "a".repeat(32);
@@ -82,6 +87,7 @@ function build(
   allowlist = { users: ["alice", "bob"], orgs: [] as string[] },
   now?: () => number,
   onActivated?: (installationIds: number[]) => void,
+  onReposAdded?: (installationIds: number[]) => void,
 ) {
   const logger = createLogger("trace", {
     write: (chunk) => logs.push(JSON.parse(chunk)),
@@ -114,6 +120,7 @@ function build(
     allowlist,
     logger,
     ...(onActivated === undefined ? {} : { onActivated }),
+    ...(onReposAdded === undefined ? {} : { onReposAdded }),
     ...(now === undefined ? {} : { now }),
   });
   return { access, tokens, logger, github };
@@ -131,6 +138,7 @@ function appFor({
     db: database.db,
     github,
     installations: unusedInstallations,
+    jobs: unusedJobs,
     version: "1.0.0",
     webRoot: "/nonexistent",
     setup: createSetup({ db: database.db, config, logger }),
@@ -897,6 +905,103 @@ describe("an installation that becomes or stops being active", () => {
     expect(activated).toEqual([[5]]);
     await access.compute(alice.id);
     expect(activated).toEqual([[5]]);
+  });
+
+  describe("repos recorded for the first time", () => {
+    const sessions = () => {
+      const added: number[][] = [];
+      return {
+        added,
+        ...build(allowlist, undefined, undefined, (ids) => added.push(ids)),
+      };
+    };
+
+    it("reports an active installation once for a repo it had not stored, and not again", async () => {
+      const { access, added } = sessions();
+      const alice = userWithToken("alice", ALICE);
+      worlds[ALICE] = {
+        installations: [{ id: 1, login: "alice" }],
+        repos: { 1: [repo(10, "alice", "notes")] },
+      };
+      await access.compute(alice.id);
+      expect(added).toEqual([[1]]);
+      await access.compute(alice.id);
+      expect(added).toEqual([[1]]);
+      worlds[ALICE] = {
+        installations: [{ id: 1, login: "alice" }],
+        repos: { 1: [repo(10, "alice", "notes"), repo(11, "alice", "dots")] },
+      };
+      await access.compute(alice.id);
+      expect(added).toEqual([[1], [1]]);
+    });
+
+    it("reports nothing for a repo another user's computation stored already", async () => {
+      const { access, added } = sessions();
+      const alice = userWithToken("alice", ALICE);
+      const bob = userWithToken("bob", BOB);
+      const shared = { id: 5, login: "acme", type: "Organization" as const };
+      worlds[ALICE] = {
+        installations: [shared],
+        repos: { 5: [repo(30, "acme", "app")] },
+      };
+      worlds[BOB] = worlds[ALICE];
+      await access.compute(alice.id);
+      expect(added).toEqual([[5]]);
+      await access.compute(bob.id);
+      expect(added).toEqual([[5]]);
+    });
+
+    it("reports nothing for an installation that is not active, and still records its repos", async () => {
+      const { access, added } = sessions();
+      const mallory = userWithToken("mallory", "ghu_m");
+      worlds.ghu_m = {
+        installations: [org(9)],
+        repos: { 9: [repo(90, "org-9", "tracker")] },
+      };
+      await access.compute(mallory.id);
+      expect(added).toEqual([]);
+      expect(accessOf(mallory.id)).toEqual(["R_90"]);
+    });
+
+    it("reports nothing for a suspended installation", async () => {
+      const { access, added } = sessions();
+      const alice = userWithToken("alice", ALICE);
+      worlds[ALICE] = {
+        installations: [{ id: 1, login: "alice", suspended: true }],
+        repos: { 1: [repo(10, "alice", "notes")] },
+      };
+      await access.compute(alice.id);
+      expect(added).toEqual([]);
+      expect(accessOf(alice.id)).toEqual([]);
+    });
+
+    it("keeps the access and logs when the callback throws", async () => {
+      const { access } = build(allowlist, undefined, undefined, () => {
+        throw new Error("queue is stopped");
+      });
+      const alice = userWithToken("alice", ALICE);
+      worlds[ALICE] = {
+        installations: [{ id: 1, login: "alice" }],
+        repos: { 1: [repo(10, "alice", "notes")] },
+      };
+      await expect(access.compute(alice.id)).resolves.toBe("computed");
+      expect(accessOf(alice.id)).toEqual(["R_10"]);
+      expect(
+        logs.filter((entry) =>
+          String(entry.msg).startsWith("queueing discovery"),
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("keeps the access when the activation callback throws", async () => {
+      const { access } = build(allowlist, undefined, () => {
+        throw new Error("queue is stopped");
+      });
+      const alice = userWithToken("alice", ALICE);
+      worlds[ALICE] = { installations: [org(5)], repos: { 5: [] } };
+      await expect(access.compute(alice.id)).resolves.toBe("computed");
+      expect(installationsOf(alice.id)).toEqual([5]);
+    });
   });
 
   describe("at startup", () => {

@@ -1,4 +1,6 @@
 import type { InstallationClient } from "../src/github/index.js";
+import { createJobs } from "../src/jobs/index.js";
+import { createLogger } from "../src/logger.js";
 
 export const SENTINEL = "sentinel-secret-value-7f3a9c1e5d2b4a68";
 
@@ -45,3 +47,6 @@ export const unusedInstallations: Pick<
   graphql: () =>
     Promise.reject(new Error("the test did not expect an installation call")),
 };
+
+/** A job queue for apps whose routes under test enqueue nothing. */
+export const unusedJobs = createJobs({ logger: createLogger("silent") });

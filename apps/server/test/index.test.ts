@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -21,7 +22,7 @@ import { createSession, SESSION_TTL_MS } from "../src/auth/sessions/index.js";
 import { openAndMigrate, schema } from "../src/db/index.js";
 import { accessibleRepos, hasRepoAccess } from "../src/access/index.js";
 import { addUser, signIn } from "./sign-in.js";
-import { accessHandlers, storeTokens } from "./access.js";
+import { accessHandlers, repoPayload, storeTokens } from "./access.js";
 import {
   APP_ID,
   APP_PRIVATE_KEY,
@@ -296,6 +297,118 @@ describe("process entry", () => {
     expect(response.status).toBe(200);
     expect(graphql).toHaveBeenCalledTimes(1);
     expect(graphql.mock.calls[0]?.[0]).toBe(1);
+  });
+
+  it("applies signed issue webhooks through the handlers the entry registers", async () => {
+    stubEnv({ ...validEnv, ...githubEnv });
+    const entry = await start();
+    const { db } = entry.database;
+    db.insert(schema.installations)
+      .values({
+        id: 1,
+        accountLogin: "octocat",
+        accountId: 1,
+        accountType: "User",
+        suspended: false,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    db.insert(schema.repos)
+      .values({
+        id: "R_1",
+        databaseId: 1,
+        installationId: 1,
+        owner: "octocat",
+        name: "repo-1",
+        private: true,
+        syncState: "ready",
+        openIssueCount: 2,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    for (const number of [1, 2]) {
+      db.insert(schema.issues)
+        .values({
+          id: `I_${String(number)}`,
+          databaseId: number,
+          repoId: "R_1",
+          number,
+          title: `Issue ${String(number)}`,
+          url: `https://github.com/octocat/repo-1/issues/${String(number)}`,
+          subTotal: 0,
+          subCompleted: 0,
+          blockedByTotal: 0,
+          blockingTotal: 0,
+          createdAt: 1000,
+          updatedAt: 1000,
+          syncedAt: 1,
+        })
+        .run();
+      db.insert(schema.issueDetails)
+        .values({
+          issueId: `I_${String(number)}`,
+          bodyHtml: "<p>cached</p>",
+          commentsJson: "[]",
+          commentsTotal: 0,
+          subIssuesJson: JSON.stringify({ total: 0, items: [] }),
+          fetchedForUpdatedAt: 1000,
+          fetchedAt: 1,
+        })
+        .run();
+    }
+    const send = (event: string, payload: object) => {
+      const body = JSON.stringify({
+        installation: { id: 1 },
+        repository: { node_id: "R_1", private: true },
+        ...payload,
+      });
+      return fetch(`http://127.0.0.1:${port}/webhooks/github`, {
+        method: "POST",
+        body,
+        headers: {
+          "Content-Type": "application/json",
+          "X-GitHub-Event": event,
+          "X-GitHub-Delivery": `delivery-${event}`,
+          "X-Hub-Signature-256": `sha256=${createHmac("sha256", githubEnv.GITHUB_WEBHOOK_SECRET).update(body).digest("hex")}`,
+        },
+      });
+    };
+
+    expect(
+      (
+        await send("issue_comment", {
+          action: "created",
+          issue: { node_id: "I_1" },
+        })
+      ).status,
+    ).toBe(202);
+    expect(
+      (
+        await send("issues", {
+          action: "deleted",
+          issue: { node_id: "I_2" },
+        })
+      ).status,
+    ).toBe(202);
+
+    await vi.waitFor(() => {
+      expect(
+        db
+          .select()
+          .from(schema.issues)
+          .all()
+          .map((row) => row.id),
+      ).toEqual(["I_1"]);
+      expect(
+        db
+          .select()
+          .from(schema.issueDetails)
+          .all()
+          .map((row) => row.issueId),
+      ).toEqual([]);
+    });
   });
 
   it("answers unknown /api routes in the error shape through the listener", async () => {
@@ -800,6 +913,165 @@ describe("process entry", () => {
       }
     });
 
+    it("schedules a daily discovery that recovers an installation whose discovery failed", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      let failing = true;
+      fake.server.use(
+        ...repoWithIssues(),
+        http.get(`${FAKE_API_URL}/installation/repositories`, () =>
+          failing
+            ? HttpResponse.json({ message: "Not Found" }, { status: 404 })
+            : undefined,
+        ),
+      );
+      try {
+        const entry = await start();
+        const failures = () =>
+          output
+            .join("")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .filter(
+              (record) =>
+                record.level === 40 &&
+                String(record.msg).startsWith("repository discovery failed"),
+            );
+        await until(() => failures().length > 0);
+        expect(failures()[0]).toMatchObject({
+          installationId: INSTALLATION_ID,
+        });
+        expect(repos(entry)).toEqual([]);
+
+        failing = false;
+        expect(() => entry.jobs.schedule("sync.discover-all", 1000)).toThrow(
+          /already scheduled/,
+        );
+        expect(entry.jobs.enqueue("sync.discover-all", undefined)).toBe(true);
+        await until(() => readyWithIssues(entry));
+        expect(repos(entry)).toEqual([
+          {
+            id: "R_1",
+            installation_id: INSTALLATION_ID,
+            sync_state: "ready",
+            open_issue_count: 3,
+          },
+        ]);
+      } finally {
+        fake.close();
+      }
+    });
+
+    it("schedules the daily resync of the ready repositories", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.db
+        .insert(schema.repos)
+        .values({
+          id: "R_1",
+          databaseId: 1,
+          installationId: INSTALLATION_ID,
+          owner: "octocat",
+          name: "repo-1",
+          private: false,
+          syncState: "ready",
+          openIssueCount: 0,
+          lastFullSyncAt: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(...repoWithIssues());
+      try {
+        const entry = await start();
+        expect(() => entry.jobs.schedule("sync.resync", 1000)).toThrow(
+          /already scheduled/,
+        );
+        expect(issueIds(entry)).toEqual([]);
+        expect(entry.jobs.enqueue("sync.resync", undefined)).toBe(true);
+        await until(() => issueIds(entry).length === 3);
+        expect(issueIds(entry)).toEqual([
+          { id: "I_1" },
+          { id: "I_2" },
+          { id: "I_3" },
+        ]);
+      } finally {
+        fake.close();
+      }
+    });
+
+    it("schedules the reconciliation of the ready repositories", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.db
+        .insert(schema.repos)
+        .values({
+          id: "R_1",
+          databaseId: 1,
+          installationId: INSTALLATION_ID,
+          owner: "octocat",
+          name: "repo-1",
+          private: false,
+          syncState: "ready",
+          openIssueCount: 0,
+          lastFullSyncAt: 1,
+          reconcileSince: "2026-01-01T00:00:00.000Z",
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      // The lookup by node id resolves issues for the installation that owns
+      // the repo, which the fake names by its own token.
+      repoWithIssues();
+      (github.world.repos[0] as { installationId?: number }).installationId =
+        INSTALLATION_ID;
+      fake.server.use(...github.handlers);
+      try {
+        const entry = await start();
+        expect(() => entry.jobs.schedule("sync.reconcile", 1000)).toThrow(
+          /already scheduled/,
+        );
+        expect(issueIds(entry)).toEqual([]);
+        expect(entry.jobs.enqueue("sync.reconcile", undefined)).toBe(true);
+        await until(() => issueIds(entry).length === 3);
+        expect(issueIds(entry)).toEqual([
+          { id: "I_1" },
+          { id: "I_2" },
+          { id: "I_3" },
+        ]);
+        expect(
+          entry.database.sqlite
+            .prepare("SELECT last_reconciled_at FROM repos")
+            .pluck()
+            .get(),
+        ).not.toBeNull();
+      } finally {
+        fake.close();
+      }
+    });
+
     it("discovers and syncs an installation when an access computation makes it active", async () => {
       const seed = openAndMigrate(dataDir);
       const live = signIn(seed.db, addUser(seed.db, "octocat").id);
@@ -844,6 +1116,127 @@ describe("process entry", () => {
       } finally {
         fake.close();
       }
+    });
+
+    describe("a repository the hourly access job records first", () => {
+      const seedActiveInstallation = () => {
+        const seed = openAndMigrate(dataDir);
+        const live = signIn(seed.db, addUser(seed.db, "octocat").id);
+        storeTokens(seed.db, validEnv.CROSSBOARD_APP_SECRET, live.userId, {
+          access: "ghu_octocat",
+        });
+        seed.db
+          .insert(schema.installations)
+          .values(installationRow(INSTALLATION_ID, "octocat"))
+          .run();
+        seed.sqlite.close();
+        return live;
+      };
+      const reachable = (
+        ...entries: { id: number; nodeId: string; name: string }[]
+      ) =>
+        accessHandlers({
+          ghu_octocat: {
+            installations: [{ id: INSTALLATION_ID, login: "octocat" }],
+            repos: {
+              [INSTALLATION_ID]: entries.map((entry) => ({
+                ...entry,
+                owner: "octocat",
+              })),
+            },
+          },
+        });
+
+      it("is discovered and synced right away for an installation that was already active", async () => {
+        seedActiveInstallation();
+        stubEnv(discoveryEnv());
+        const fake = createFakeGithub();
+        fake.listen();
+        let appeared = false;
+        let listRequests = 0;
+        fake.server.use(
+          ...repoWithIssues(),
+          ...reachable({ id: 1, nodeId: "R_1", name: "repo-1" }),
+          http.get(`${FAKE_API_URL}/installation/repositories`, () => {
+            listRequests++;
+            return HttpResponse.json({
+              total_count: 1,
+              repositories: appeared
+                ? [
+                    repoPayload({
+                      id: 1,
+                      nodeId: "R_1",
+                      owner: "octocat",
+                      name: "repo-1",
+                    }),
+                  ]
+                : [],
+            });
+          }),
+        );
+        try {
+          const entry = await start();
+          await until(() => listRequests > 0);
+          appeared = true;
+          expect(repos(entry)).toEqual([]);
+          expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+          await until(() => readyWithIssues(entry));
+          expect(repos(entry)).toEqual([
+            {
+              id: "R_1",
+              installation_id: INSTALLATION_ID,
+              sync_state: "ready",
+              open_issue_count: 3,
+            },
+          ]);
+          expect(issueIds(entry)).toHaveLength(3);
+          expect(listRequests).toBe(2);
+        } finally {
+          fake.close();
+        }
+      });
+
+      it("is removed again, with its access, when GitHub no longer lists it", async () => {
+        const live = seedActiveInstallation();
+        stubEnv(discoveryEnv());
+        const fake = createFakeGithub();
+        fake.listen();
+        fake.server.use(
+          ...repoWithIssues(),
+          ...reachable(
+            { id: 1, nodeId: "R_1", name: "repo-1" },
+            { id: 9, nodeId: "R_9", name: "repo-9" },
+          ),
+        );
+        try {
+          const entry = await start();
+          expect(entry.jobs.enqueue("access.compute", undefined)).toBe(true);
+          const computed = () =>
+            entry.database.sqlite
+              .prepare("SELECT count(*) FROM user_installations")
+              .pluck()
+              .get() === 1;
+          await until(
+            () =>
+              computed() && readyWithIssues(entry) && repos(entry).length === 1,
+          );
+          expect(repos(entry)).toEqual([
+            {
+              id: "R_1",
+              installation_id: INSTALLATION_ID,
+              sync_state: "ready",
+              open_issue_count: 3,
+            },
+          ]);
+          expect(
+            entry.database.sqlite
+              .prepare("SELECT user_id, repo_id FROM user_repo_access")
+              .all(),
+          ).toEqual([{ user_id: live.userId, repo_id: "R_1" }]);
+        } finally {
+          fake.close();
+        }
+      });
     });
   });
 
@@ -1046,6 +1439,163 @@ describe("process entry", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     expect(ticks).toEqual([0]);
+  });
+
+  describe("background pause rule", () => {
+    const logLines = () =>
+      output
+        .join("")
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const suspendedInstallation = (suspended: boolean) => ({
+      id: 1,
+      accountLogin: "octocat",
+      accountId: 1,
+      accountType: "User" as const,
+      suspended,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    it("drops the background jobs of a suspended installation and applies the delivery that lifts the suspension", async () => {
+      stubEnv({ ...validEnv, ...githubEnv });
+      const entry = await start();
+      const { db } = entry.database;
+      db.insert(schema.installations).values(suspendedInstallation(true)).run();
+      const ran: string[] = [];
+      entry.jobs.register<string>("probe", (tag) => void ran.push(tag));
+      const send = (event: string, payload: object) => {
+        const body = JSON.stringify({ installation: { id: 1 }, ...payload });
+        return fetch(`http://127.0.0.1:${port}/webhooks/github`, {
+          method: "POST",
+          body,
+          headers: {
+            "Content-Type": "application/json",
+            "X-GitHub-Event": event,
+            "X-GitHub-Delivery": `delivery-${event}`,
+            "X-Hub-Signature-256": `sha256=${createHmac("sha256", githubEnv.GITHUB_WEBHOOK_SECRET).update(body).digest("hex")}`,
+          },
+        });
+      };
+      const flag = () =>
+        db
+          .select({ suspended: schema.installations.suspended })
+          .from(schema.installations)
+          .get()?.suspended;
+
+      entry.jobs.enqueue("probe", "while suspended", { installationId: 1 });
+      expect(
+        (
+          await send("issue_comment", {
+            action: "created",
+            issue: { node_id: "I_1" },
+          })
+        ).status,
+      ).toBe(202);
+      await vi.waitFor(() => {
+        expect(
+          logLines().filter((line) => line.msg === "background job dropped"),
+        ).toEqual([
+          expect.objectContaining({
+            job: "probe",
+            installationId: 1,
+            reason: "installation suspended",
+          }),
+          expect.objectContaining({
+            job: "webhook:issue_comment",
+            installationId: 1,
+            reason: "installation suspended",
+          }),
+        ]);
+      });
+      expect(ran).toEqual([]);
+      expect(flag()).toBe(true);
+
+      expect(
+        (
+          await send("installation", {
+            action: "unsuspend",
+            installation: {
+              id: 1,
+              account: { id: 1, login: "octocat" },
+              target_type: "User",
+              suspended_at: null,
+            },
+          })
+        ).status,
+      ).toBe(202);
+      await vi.waitFor(() => {
+        expect(flag()).toBe(false);
+      });
+
+      entry.jobs.enqueue("probe", "after unsuspend", { installationId: 1 });
+      await vi.waitFor(() => {
+        expect(ran).toEqual(["after unsuspend"]);
+      });
+    });
+
+    it("defers the background jobs of an installation below 10% of its budget until the reset", async () => {
+      stubEnv({
+        ...validEnv,
+        ...githubEnv,
+        GITHUB_APP_ID: APP_ID,
+        GITHUB_PRIVATE_KEY: APP_PRIVATE_KEY,
+        CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+        CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+      });
+      const fake = createFakeGithub();
+      fake.listen();
+      try {
+        const resetAt = new Date(Date.now() + 400).toISOString();
+        fake.server.use(
+          http.post(`${FAKE_API_URL}/graphql`, () =>
+            HttpResponse.json({
+              data: {
+                rateLimit: { cost: 1, remaining: 250, limit: 5000, resetAt },
+                repository: { issues: { totalCount: 0, nodes: [] } },
+              },
+            }),
+          ),
+        );
+        const entry = await start();
+        await entry.installations.graphql(
+          INSTALLATION_ID,
+          queries.openIssuesPage,
+          { owner: "octocat", name: "repo-1" },
+        );
+        const ran: string[] = [];
+        entry.jobs.register<string>("probe", (tag) => void ran.push(tag));
+
+        entry.jobs.enqueue("probe", "background", {
+          installationId: INSTALLATION_ID,
+        });
+        entry.jobs.enqueue("probe", "interactive", {
+          installationId: INSTALLATION_ID,
+          kind: "interactive",
+        });
+        await vi.waitFor(() => {
+          expect(ran).toEqual(["interactive"]);
+        });
+        expect(
+          logLines().filter((line) => line.msg === "background job paused"),
+        ).toEqual([
+          expect.objectContaining({
+            job: "probe",
+            installationId: INSTALLATION_ID,
+          }),
+        ]);
+
+        await vi.waitFor(
+          () => {
+            expect(ran).toEqual(["interactive", "background"]);
+          },
+          { timeout: 3_000 },
+        );
+      } finally {
+        fake.close();
+      }
+    });
   });
 
   it.each(SIGNALS)(

@@ -29,8 +29,16 @@ export interface AccessOptions {
   /**
    * Called, after the computation is stored, with the installations that
    * became active through it (SPEC FR-3). Repository discovery hangs off it.
+   * A throw is logged and does not change the computation's result.
    */
   onActivated?: (installationIds: number[]) => void;
+  /**
+   * Called, after the computation is stored, with the active, non-suspended
+   * installations that the computation recorded a repo for that was not
+   * stored before, so the repo is discovered and synced without waiting for
+   * the scheduled discovery (SPEC §6.1).
+   */
+  onReposAdded?: (installationIds: number[]) => void;
   now?: () => number;
 }
 
@@ -52,7 +60,8 @@ export interface Access {
    * been replaced in the meantime. A GitHub failure throws and leaves the
    * stored access as it was. The active set (SPEC FR-3) is derived again in
    * the same transaction: the installations it lost are purged (SPEC §8.2),
-   * and the ones it gained are logged and passed to `onActivated`.
+   * the ones it gained are logged and passed to `onActivated`, and the active
+   * ones it recorded new repos for are passed to `onReposAdded`.
    */
   compute(
     userId: number,
@@ -82,6 +91,7 @@ export function createAccess({
   allowlist,
   logger,
   onActivated,
+  onReposAdded,
   now = Date.now,
 }: AccessOptions): Access {
   async function fetchReached(token: string): Promise<Reached[]> {
@@ -151,7 +161,21 @@ export function createAccess({
         }
       }
       let granted = 0;
+      const addedBy = new Set<number>();
       for (const batch of chunks([...found.values()])) {
+        const known = new Set(
+          tx
+            .select({ id: repos.id })
+            .from(repos)
+            .where(
+              inArray(
+                repos.id,
+                batch.map(({ repo }) => repo.nodeId),
+              ),
+            )
+            .all()
+            .map(({ id }) => id),
+        );
         // Identity fields only: sync state belongs to repository discovery.
         // A row that clashes on its unique keys is left alone, and the repo
         // then grants no access.
@@ -188,6 +212,10 @@ export function createAccess({
             "repositories that clash with a stored repository were left out of the user's access",
           );
         }
+        for (const { id } of present) {
+          const entry = found.get(id);
+          if (entry !== undefined && !known.has(id)) addedBy.add(entry.by);
+        }
         for (const part of chunks(present)) {
           tx.insert(userRepoAccess)
             .values(
@@ -200,11 +228,17 @@ export function createAccess({
       const after = activeInstallationIds(tx, allowlist);
       const deactivated = [...before].filter((id) => !after.has(id));
       const purged = purgeInstallations(tx, deactivated);
+      const suspended = new Set(
+        reached
+          .filter(({ installation }) => installation.suspendedAt !== null)
+          .map(({ installation }) => installation.id),
+      );
       return {
         granted,
         purged,
         activated: [...after].filter((id) => !before.has(id)),
         deactivated,
+        added: [...addedBy].filter((id) => after.has(id) && !suspended.has(id)),
       };
     });
   }
@@ -229,7 +263,7 @@ export function createAccess({
         }
         throw error;
       }
-      const { granted, purged, activated, deactivated } = store(
+      const { granted, purged, activated, deactivated, added } = store(
         userId,
         reached,
         now(),
@@ -242,10 +276,25 @@ export function createAccess({
           activated,
           deactivated,
           purged,
+          added,
         },
         "user access computed",
       );
-      if (activated.length > 0) onActivated?.(activated);
+      // The access is stored and reported whatever the queueing does.
+      for (const [installationIds, notify] of [
+        [activated, onActivated],
+        [added, onReposAdded],
+      ] as const) {
+        if (installationIds.length === 0) continue;
+        try {
+          notify?.(installationIds);
+        } catch (error) {
+          logger.error(
+            { err: error, userId, installations: installationIds },
+            "queueing discovery after an access computation failed; the scheduled discovery picks it up",
+          );
+        }
+      }
       return "computed";
     },
   };

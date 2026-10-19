@@ -22,14 +22,17 @@ import {
   createGithubClient,
   createInstallationClient,
 } from "./github/index.js";
-import { createJobs } from "./jobs/index.js";
+import { createInstallationPause, createJobs } from "./jobs/index.js";
 import { createLogger } from "./logger.js";
 import {
   createDiscovery,
   enqueueDiscovery,
   registerDiscoveryJob,
+  registerDiscoverySchedule,
 } from "./sync/discovery.js";
+import { createReconcile, registerReconcileJobs } from "./sync/reconcile.js";
 import { createRefetch } from "./sync/refetch.js";
+import { registerResyncJob } from "./sync/resync.js";
 import {
   createSync,
   enqueueSync,
@@ -37,6 +40,7 @@ import {
   registerSyncJob,
 } from "./sync/sync.js";
 import { readServerVersion } from "./version.js";
+import { createWebhookHandlers, webhookJobName } from "./webhooks/index.js";
 import type { Logger } from "pino";
 
 function bootstrap(): {
@@ -78,8 +82,29 @@ logger.info(
   "crossboard configured",
 );
 
+export const github = createGithubClient({
+  apiUrl: config.githubApiUrl,
+  webUrl: config.githubWebUrl,
+  logger,
+});
+
 // Started once the migrations are applied, so handlers can rely on the schema.
-export const jobs = createJobs({ logger });
+// Every background job that names an installation passes the pause rule: a
+// suspended installation's job is dropped and one below 10% of its budget
+// waits for the reset. The deliveries that lift a suspension or remove the
+// installation are exempt, or a suspended installation could never resume.
+export const jobs = createJobs({
+  logger,
+  pause: createInstallationPause({
+    db: database.db,
+    budgets: github.budgets,
+    exemptJobs: [
+      "installation",
+      "installation_repositories",
+      "github_app_authorization",
+    ].map(webhookJobName),
+  }),
+});
 registerSessionCleanup(jobs, database.db, logger);
 jobs.start();
 enqueueSessionCleanupAtStart(jobs);
@@ -91,12 +116,6 @@ if (!existsSync(join(webRoot, "index.html"))) {
     "the built web app was not found; only /api is served",
   );
 }
-
-export const github = createGithubClient({
-  apiUrl: config.githubApiUrl,
-  webUrl: config.githubWebUrl,
-  logger,
-});
 
 export const setup = createSetup({ db: database.db, config, logger });
 try {
@@ -133,6 +152,24 @@ export const sync = createSync({
   logger,
 });
 registerSyncJob(jobs, sync);
+registerResyncJob(jobs, database.db, setup.allowlist);
+
+// Polls every ready repo for the issues updated since its last round, the
+// safety net under the webhooks and the only source without them (SPEC §6.3).
+export const reconcile = createReconcile({
+  db: database.db,
+  installations,
+  isActive,
+  issues,
+  logger,
+});
+registerReconcileJobs(
+  jobs,
+  reconcile,
+  database.db,
+  isActive,
+  config.reconcileIntervalMin * 60_000,
+);
 
 export const discovery = createDiscovery({
   db: database.db,
@@ -143,7 +180,12 @@ export const discovery = createDiscovery({
     for (const repo of pending) enqueueSync(jobs, repo);
   },
 });
-registerDiscoveryJob(jobs, discovery);
+registerDiscoveryJob(jobs, discovery, logger);
+registerDiscoverySchedule(jobs, database.db, isActive);
+
+const discoverNow = (installationIds: number[]) => {
+  for (const id of installationIds) enqueueDiscovery(jobs, id);
+};
 
 export const access = createAccess({
   db: database.db,
@@ -157,9 +199,10 @@ export const access = createAccess({
     appSecret: config.appSecret,
     logger,
   }),
-  onActivated: (installationIds) => {
-    for (const id of installationIds) enqueueDiscovery(jobs, id);
-  },
+  // An installation that became active, or that gained a repo this
+  // computation recorded first, is discovered right away.
+  onActivated: discoverNow,
+  onReposAdded: discoverNow,
 });
 registerAccessJob(jobs, access, database.db, logger);
 
@@ -175,11 +218,21 @@ for (const id of activeInstallationIds(database.db, setup.allowlist)) {
 }
 enqueueSyncAtStart(jobs, database.db, setup.allowlist);
 
+const webhookHandlers = createWebhookHandlers({
+  db: database.db,
+  jobs,
+  issues,
+  access,
+  allowlist: setup.allowlist,
+});
+
 const app = createApp({
   logger,
   db: database.db,
   github,
   installations,
+  jobs,
+  webhookHandlers,
   version: readServerVersion(),
   webRoot,
   setup,

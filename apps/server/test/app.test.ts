@@ -14,7 +14,12 @@ import { loadConfig } from "../src/config/index.js";
 import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
-import { githubEnv, validEnv, unusedInstallations } from "./helpers.js";
+import {
+  githubEnv,
+  validEnv,
+  unusedInstallations,
+  unusedJobs,
+} from "./helpers.js";
 import { signIn, createTestAccess } from "./sign-in.js";
 
 let dir: string;
@@ -62,6 +67,7 @@ function build(root = webRoot) {
     logger,
     github,
     installations: unusedInstallations,
+    jobs: unusedJobs,
     access: createTestAccess({
       db: database.db,
       github,
