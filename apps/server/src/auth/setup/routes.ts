@@ -1,5 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Hono, type MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { deleteCookie } from "hono/cookie";
 import type { Logger } from "pino";
 import { z } from "zod";
@@ -25,6 +26,8 @@ export interface SetupRoutesOptions extends SetupCookieOptions {
   github: GithubClient;
   logger: Logger;
 }
+
+const SETUP_TOKEN_MAX_BYTES = 4 * 1024;
 
 const ORGANIZATION_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
@@ -63,6 +66,16 @@ export function createSetupRoutes({
     .post(
       "/token",
       requireSameOriginJson(publicUrl),
+      bodyLimit({
+        maxSize: SETUP_TOKEN_MAX_BYTES,
+        onError: (c) =>
+          errorResponse(
+            c,
+            413,
+            "payload_too_large",
+            "A setup token request is at most 4 KB",
+          ),
+      }),
       validate("json", z.object({ token: z.string().min(1) })),
       async (c) => {
         const { token } = c.req.valid("json");

@@ -304,6 +304,40 @@ describe("POST /api/setup/token", () => {
     }
   });
 
+  it("rejects a body over the size limit with 413 and sets no cookie", async () => {
+    const { app } = build();
+    const oversized = JSON.stringify({ token, padding: "x".repeat(8 * 1024) });
+    const response = await exchange(app, oversized);
+    expect(response.status).toBe(413);
+    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(await response.json()).toMatchObject({
+      error: { code: "payload_too_large" },
+    });
+  });
+
+  it("rejects an oversized streamed body that declares no length", async () => {
+    const { app } = build();
+    const chunk = new TextEncoder().encode("x".repeat(1024));
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 16) {
+          controller.enqueue(chunk);
+        } else {
+          controller.close();
+        }
+      },
+    });
+    const response = await app.request("/api/setup/token", {
+      method: "POST",
+      headers: { Origin: ORIGIN, "Content-Type": "application/json" },
+      body,
+      duplex: "half",
+    } as RequestInit);
+    expect(response.status).toBe(413);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
   it("rejects a non-JSON body", async () => {
     const { app } = build();
     const response = await exchange(app, `token=${token}`, {
