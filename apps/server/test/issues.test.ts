@@ -2,7 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { issueListSchema, type IssueList } from "../src/api/schemas.js";
+import {
+  issueListSchema,
+  issueSummarySchema,
+  type IssueList,
+} from "../src/api/schemas.js";
 import { createApp } from "../src/app.js";
 import { createSetup } from "../src/auth/setup/index.js";
 import { loadConfig } from "../src/config/index.js";
@@ -605,5 +609,194 @@ describe("GET /api/issues performance", () => {
     expect(body.total).toBeGreaterThan(0);
     expect(body.items.length).toBeLessThanOrEqual(200);
     expect(elapsed).toBeLessThan(1000);
+  });
+});
+
+describe("GET /api/issues/:owner/:repo/:number", () => {
+  const summary = (cookie: string, path: string) =>
+    build().request(`/api/issues${path}`, { headers: { Cookie: cookie } });
+
+  async function summaryBody(cookie: string, path: string) {
+    const response = await summary(cookie, path);
+    expect(response.status).toBe(200);
+    return issueSummarySchema.parse(await response.json());
+  }
+
+  it("rejects a request without a session", async () => {
+    const response = await build().request("/api/issues/acme/web/1");
+    expect(response.status).toBe(401);
+  });
+
+  it("returns the issue item with the full dependency lists, their states and the parent", async () => {
+    const alice = addUser(database.db, "octocat");
+    const web = addRepo("acme", "web", [alice.id]);
+    const api = addRepo("acme", "api", [alice.id]);
+    addRef("R_parent", "acme/web", 7, "OPEN");
+    addRef("R_b1", "acme/api", 2, "CLOSED");
+    addRef("R_b2", "acme/api", 1, "OPEN");
+    addRef("R_b3", "acme/web", 9, "OPEN");
+    addRef("R_k1", "acme/web", 4, "OPEN");
+    const target = addIssue(web, {
+      number: 3,
+      parentId: "R_parent",
+      blockedByTotal: 3,
+      blockingTotal: 1,
+    });
+    addIssue(api, { id: "R_b2", number: 1 });
+    addIssue(web, { id: "R_k1", number: 4 });
+    for (const blocker of ["R_b1", "R_b2", "R_b3"]) addDep(target, blocker);
+    addDep("R_k1", target);
+
+    const body = await summaryBody(
+      signIn(database.db, alice.id).cookie,
+      "/acme/web/3",
+    );
+
+    expect(body.id).toBe(target);
+    expect(body.number).toBe(3);
+    expect(body.isBlocked).toBe(true);
+    expect(body.parent).toEqual({
+      owner: "acme",
+      repo: "web",
+      number: 7,
+      title: "Ref 7",
+      state: "OPEN",
+    });
+    expect(body.blockedBy).toEqual({
+      open: 2,
+      notAccessible: 0,
+      items: [
+        {
+          owner: "acme",
+          repo: "api",
+          number: 1,
+          title: "Ref 1",
+          state: "OPEN",
+          url: "https://github.com/acme/api/issues/1",
+          synced: true,
+        },
+        {
+          owner: "acme",
+          repo: "api",
+          number: 2,
+          title: "Ref 2",
+          state: "CLOSED",
+          url: "https://github.com/acme/api/issues/2",
+          synced: false,
+        },
+        {
+          owner: "acme",
+          repo: "web",
+          number: 9,
+          title: "Ref 9",
+          state: "OPEN",
+          url: "https://github.com/acme/web/issues/9",
+          synced: false,
+        },
+      ],
+    });
+    expect(body.blocking).toEqual({
+      open: 1,
+      notAccessible: 0,
+      items: [
+        {
+          owner: "acme",
+          repo: "web",
+          number: 4,
+          title: "Ref 4",
+          state: "OPEN",
+          url: "https://github.com/acme/web/issues/4",
+          synced: true,
+        },
+      ],
+    });
+  });
+
+  it("matches the repo case-insensitively and carries the list's item fields", async () => {
+    const alice = addUser(database.db, "octocat");
+    const web = addRepo("Acme", "Web", [alice.id]);
+    addIssue(web, { number: 1, title: "Crash", typeName: "Bug" });
+    const { cookie } = signIn(database.db, alice.id);
+
+    const body = await summaryBody(cookie, "/acme/WEB/1");
+    const listed = (await listBody(cookie)).items[0];
+
+    expect(body.repo).toEqual({ owner: "Acme", name: "Web" });
+    expect(body.title).toBe("Crash");
+    expect({ ...body, blockedBy: undefined, blocking: undefined }).toEqual({
+      ...listed,
+      blockedBy: undefined,
+      blocking: undefined,
+    });
+  });
+
+  it("counts relations the viewer cannot read as max(0, total - readable) and never names them", async () => {
+    const alice = addUser(database.db, "octocat");
+    const bob = addUser(database.db, "bobby");
+    const web = addRepo("acme", "web", [alice.id, bob.id]);
+    const secret = addRepo("acme", "secret", [alice.id]);
+    addRef("R_parent", "acme/secret", 5, "OPEN");
+    addRef("R_visible", "acme/web", 8, "OPEN");
+    addRef("R_hidden", "acme/secret", 6, "OPEN");
+    const target = addIssue(web, {
+      number: 1,
+      parentId: "R_parent",
+      blockedByTotal: 3,
+      blockingTotal: 1,
+    });
+    addIssue(secret, { id: "R_hidden", number: 6 });
+    addDep(target, "R_visible");
+    addDep(target, "R_hidden");
+
+    const forAlice = await summaryBody(
+      signIn(database.db, alice.id).cookie,
+      "/acme/web/1",
+    );
+    expect(forAlice.parent?.title).toBe("Ref 5");
+    expect(forAlice.blockedBy.notAccessible).toBe(1);
+    expect(forAlice.blockedBy.items.map((entry) => entry.number)).toEqual([
+      6, 8,
+    ]);
+    expect(forAlice.blocking.notAccessible).toBe(1);
+
+    const forBob = await summary(
+      signIn(database.db, bob.id).cookie,
+      "/acme/web/1",
+    );
+    const text = await forBob.text();
+    expect(forBob.status).toBe(200);
+    const bobBody = issueSummarySchema.parse(JSON.parse(text));
+    expect(bobBody.parent).toBeNull();
+    expect(bobBody.blockedBy.notAccessible).toBe(2);
+    expect(bobBody.blockedBy.open).toBe(1);
+    expect(bobBody.blockedBy.items.map((entry) => entry.number)).toEqual([8]);
+    expect(bobBody.blocking.notAccessible).toBe(1);
+    expect(text).not.toContain("secret");
+  });
+
+  it("answers 404 for an issue that is not synced or not in the user's access", async () => {
+    const alice = addUser(database.db, "octocat");
+    const bob = addUser(database.db, "bobby");
+    const mine = addRepo("acme", "web", [alice.id]);
+    const theirs = addRepo("acme", "private", [bob.id]);
+    addIssue(mine, { number: 1 });
+    addIssue(theirs, { number: 1 });
+    const { cookie } = signIn(database.db, alice.id);
+
+    expect((await summary(cookie, "/acme/web/1")).status).toBe(200);
+    expect((await summary(cookie, "/acme/web/2")).status).toBe(404);
+    expect((await summary(cookie, "/acme/private/1")).status).toBe(404);
+    expect((await summary(cookie, "/acme/nowhere/1")).status).toBe(404);
+    expect(
+      (await summary(signIn(database.db, bob.id).cookie, "/acme/web/1")).status,
+    ).toBe(404);
+  });
+
+  it("rejects an issue number that is not a positive integer", async () => {
+    const alice = addUser(database.db, "octocat");
+    const { cookie } = signIn(database.db, alice.id);
+
+    expect((await summary(cookie, "/acme/web/abc")).status).toBe(400);
+    expect((await summary(cookie, "/acme/web/0")).status).toBe(400);
   });
 });

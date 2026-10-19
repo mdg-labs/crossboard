@@ -55,6 +55,56 @@ export const issueItemSchema = z.object({
 
 export type IssueItem = z.infer<typeof issueItemSchema>;
 
+export const issueStateSchema = z.enum(["OPEN", "CLOSED"]);
+
+/**
+ * One entry of a `blockedBy` / `blocking` list (SPEC FR-23). Only relations in
+ * a repo the viewer can read are listed; the rest are counted in
+ * `notAccessible` (FR-24). `synced` marks an entry that has a detail view
+ * (FR-39); a closed or not yet synced issue is listed with `synced: false`.
+ */
+export const issueRelationSchema = z.object({
+  owner: z.string(),
+  repo: z.string(),
+  number: z.number().int(),
+  title: z.string(),
+  state: issueStateSchema,
+  url: z.string(),
+  synced: z.boolean(),
+});
+
+export type IssueRelationEntry = z.infer<typeof issueRelationSchema>;
+
+const relationListSchema = relationCountsSchema.extend({
+  items: z.array(issueRelationSchema),
+});
+
+/**
+ * The summary route's response (SPEC §7.4): the issue item, with the parent's
+ * title and state and the full dependency lists in place of the bare counts.
+ */
+export const issueSummarySchema = issueItemSchema.extend({
+  parent: z
+    .object({
+      owner: z.string(),
+      repo: z.string(),
+      number: z.number().int(),
+      title: z.string(),
+      state: issueStateSchema,
+    })
+    .nullable(),
+  blockedBy: relationListSchema,
+  blocking: relationListSchema,
+});
+
+export type IssueSummary = z.infer<typeof issueSummarySchema>;
+
+export const issueParamsSchema = z.object({
+  owner: z.string().min(1),
+  repo: z.string().min(1),
+  number: z.coerce.number().int().min(1),
+});
+
 export const issueListQuerySchema = z.object({
   q: z.string().default(""),
   sort: sortSchema.default(DEFAULT_SORT),
