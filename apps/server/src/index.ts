@@ -113,6 +113,7 @@ const app = createApp({
   version: readServerVersion(),
   webRoot,
   setup,
+  access,
   appSecret: config.appSecret,
   publicUrl: config.publicUrl,
 });

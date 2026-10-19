@@ -31,7 +31,7 @@ import { decrypt, encrypt } from "../src/security/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { createFakeGithub, FAKE_API_URL, FAKE_WEB_URL } from "./github-fake.js";
 import { githubEnv, SENTINEL, validEnv } from "./helpers.js";
-import { signIn as startSession } from "./sign-in.js";
+import { signIn as startSession, createTestAccess } from "./sign-in.js";
 
 const ORIGIN = validEnv.CROSSBOARD_PUBLIC_URL;
 const APP_SECRET = validEnv.CROSSBOARD_APP_SECRET;
@@ -89,17 +89,25 @@ function build(env: Record<string, string> = {}) {
   const logger = createLogger("trace", { write: (chunk) => logs.push(chunk) });
   const setup = createSetup({ db: database.db, config, logger });
   const token = setup.start() ?? "";
+  const github = createGithubClient({
+    apiUrl: config.githubApiUrl,
+    webUrl: config.githubWebUrl,
+    logger,
+  });
   const app = createApp({
     logger,
     db: database.db,
-    github: createGithubClient({
-      apiUrl: config.githubApiUrl,
-      webUrl: config.githubWebUrl,
-      logger,
-    }),
+    github,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
     setup,
+    access: createTestAccess({
+      db: database.db,
+      github,
+      setup,
+      appSecret: config.appSecret,
+      logger,
+    }),
     appSecret: config.appSecret,
     publicUrl: config.publicUrl,
   });

@@ -15,7 +15,7 @@ import { createGithubClient } from "../src/github/index.js";
 import { createLogger } from "../src/logger.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { githubEnv, validEnv } from "./helpers.js";
-import { signIn } from "./sign-in.js";
+import { signIn, createTestAccess } from "./sign-in.js";
 
 let dir: string;
 let webRoot: string;
@@ -48,15 +48,24 @@ const member = () => ({ Cookie: signIn(database.db).cookie });
 function build(root = webRoot) {
   const logger = createLogger("info", { write: (chunk) => logs.push(chunk) });
   const config = loadConfig({ ...validEnv, ...githubEnv });
+  const setup = createSetup({ db: database.db, config, logger });
+  const github = createGithubClient({
+    apiUrl: "https://api.github.test",
+    webUrl: "https://github.test",
+    logger,
+  });
   return createApp({
-    setup: createSetup({ db: database.db, config, logger }),
+    setup,
     db: database.db,
     appSecret: config.appSecret,
     publicUrl: config.publicUrl,
     logger,
-    github: createGithubClient({
-      apiUrl: "https://api.github.test",
-      webUrl: "https://github.test",
+    github,
+    access: createTestAccess({
+      db: database.db,
+      github,
+      setup,
+      appSecret: config.appSecret,
       logger,
     }),
     version: "9.8.7",

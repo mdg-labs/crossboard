@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Logger } from "pino";
-import { createAccess } from "../../access/index.js";
+import type { Access } from "../../access/index.js";
 import { errorResponse } from "../../api/errors.js";
 import { schema, type Db } from "../../db/index.js";
 import { GithubError, type GithubClient } from "../../github/index.js";
@@ -12,7 +12,6 @@ import {
   type SessionCookieOptions,
 } from "../sessions/index.js";
 import type { Setup } from "../setup/index.js";
-import { createUserTokens } from "../tokens.js";
 import { isAllowedUser } from "./allowlist.js";
 import { clearOAuthState, issueOAuthState, matchOAuthState } from "./state.js";
 
@@ -22,6 +21,8 @@ export interface SignInRoutesOptions extends SessionCookieOptions {
   setup: Setup;
   logger: Logger;
   appSecret: string;
+  /** The process's one access instance, which shares its token refreshes. */
+  access: Access;
 }
 
 export const NOT_ALLOWED_PATH = "/auth/not-allowed";
@@ -41,21 +42,9 @@ export function createSignInRoutes({
   logger,
   appSecret,
   publicUrl,
+  access,
 }: SignInRoutesOptions) {
   const cookieOptions = { publicUrl };
-  const access = createAccess({
-    db,
-    github,
-    allowlist: setup.allowlist,
-    logger,
-    tokens: createUserTokens({
-      db,
-      github,
-      credentials: () => setup.credentials(),
-      appSecret,
-      logger,
-    }),
-  });
 
   return new Hono()
     .get("/login", (c) => {

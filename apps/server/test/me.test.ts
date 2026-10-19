@@ -12,7 +12,7 @@ import { createLogger } from "../src/logger.js";
 import { encrypt } from "../src/security/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { githubEnv, validEnv } from "./helpers.js";
-import { addUser, signIn } from "./sign-in.js";
+import { addUser, signIn, createTestAccess } from "./sign-in.js";
 
 let dir: string;
 let database: TestDatabase;
@@ -38,17 +38,26 @@ function build(env: Record<string, string> = {}) {
     CROSSBOARD_ALLOWED_ORGS: "acme",
     ...env,
   });
+  const github = createGithubClient({
+    apiUrl: config.githubApiUrl,
+    webUrl: config.githubWebUrl,
+    logger,
+  });
+  const setup = createSetup({ db: database.db, config, logger });
   return createApp({
     logger,
     db: database.db,
-    github: createGithubClient({
-      apiUrl: config.githubApiUrl,
-      webUrl: config.githubWebUrl,
-      logger,
-    }),
+    github,
     version: "1.0.0",
     webRoot: join(dir, "dist"),
-    setup: createSetup({ db: database.db, config, logger }),
+    setup,
+    access: createTestAccess({
+      db: database.db,
+      github,
+      setup,
+      appSecret: config.appSecret,
+      logger,
+    }),
     appSecret: config.appSecret,
     publicUrl: config.publicUrl,
   });
