@@ -28,6 +28,7 @@ import {
   enqueueDiscovery,
   registerDiscoveryJob,
 } from "./sync/discovery.js";
+import { createRefetch } from "./sync/refetch.js";
 import {
   createSync,
   enqueueSync,
@@ -108,10 +109,20 @@ export const installations = createInstallationClient({
 const isActive = (installationId: number) =>
   activeInstallationIds(database.db, setup.allowlist).has(installationId);
 
+// Refetches issues by node id and removes them by the SPEC §8.2 rules; the
+// sync uses it for the issues a full sync no longer returns.
+export const issues = createRefetch({
+  db: database.db,
+  installations,
+  isActive,
+  logger,
+});
+
 export const sync = createSync({
   db: database.db,
   installations,
   isActive,
+  refetch: (ids) => issues.refetch(ids),
   logger,
 });
 registerSyncJob(jobs, sync);

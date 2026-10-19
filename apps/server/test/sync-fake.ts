@@ -23,6 +23,8 @@ export interface FakeIssue {
   repo: string;
   number: number;
   title?: string;
+  /** Defaults to open; a closed issue is not returned by the open-issues pages. */
+  state?: "OPEN" | "CLOSED";
   labels?: FakeLabel[];
   assignees?: { login: string; avatarUrl: string }[];
   type?: { name: string; color: string };
@@ -41,9 +43,11 @@ export interface FakeRepo {
   /** `owner/name` */
   name: string;
   id: string;
+  /** The installation that can read the repo; defaults to 1. */
+  installationId?: number;
   archived?: boolean;
   issuesEnabled?: boolean;
-  /** The open issues, in the order GitHub returns them. */
+  /** Every issue of the repo, in the order GitHub returns them. */
   issues: FakeIssue[];
 }
 
@@ -80,12 +84,15 @@ const fakeLabel = (label: FakeLabel) => ({
   description: label.description ?? null,
 });
 
-export const fakeNode = (issue: FakeIssue) => {
+export const isOpen = (issue: FakeIssue) => (issue.state ?? "OPEN") === "OPEN";
+
+export const fakeNode = (issue: FakeIssue, withState = false) => {
   const labels = issue.labels ?? [];
   const assignees = issue.assignees ?? [];
   const blockedBy = issue.blockedBy ?? [];
   const blocking = issue.blocking ?? [];
   return {
+    ...(withState ? { state: issue.state ?? "OPEN" } : {}),
     id: issue.id,
     databaseId: 1000 + issue.number,
     number: issue.number,
@@ -143,6 +150,8 @@ export const installationOf = (request: Request): number =>
 export function createFakeSyncGithub() {
   const world = {
     repos: [] as FakeRepo[],
+    /** Issues a lookup by id finds that the repo's pages leave out. */
+    hidden: [] as FakeIssue[],
     requests: [] as FakeRequest[],
     /** Fails every GraphQL request for which it returns a status. */
     failWith: undefined as
@@ -195,7 +204,7 @@ export function createFakeSyncGithub() {
                   id,
                   isArchived: repo.archived ?? false,
                   hasIssuesEnabled: repo.issuesEnabled ?? true,
-                  issues: { totalCount: repo.issues.length },
+                  issues: { totalCount: repo.issues.filter(isOpen).length },
                 };
           }),
         },
@@ -217,23 +226,51 @@ export function createFakeSyncGithub() {
       if (repo === undefined) {
         return HttpResponse.json({ data: { rateLimit, repository: null } });
       }
-      const start = after === null ? 0 : Number(after);
-      const slice = repo.issues.slice(start, start + PAGE);
-      const end = start + slice.length;
+      const open = repo.issues.filter(isOpen);
       return HttpResponse.json({
         data: {
           rateLimit,
           repository: {
             issues: {
-              totalCount: repo.issues.length,
-              pageInfo: {
-                hasNextPage: end < repo.issues.length,
-                endCursor: String(end),
-              },
-              nodes: slice.map(fakeNode),
+              totalCount: open.length,
+              ...fakePage(
+                open.map((entry) => fakeNode(entry)),
+                PAGE,
+                after,
+              ),
             },
           },
         },
+      });
+    }
+    if (name === "IssuesByIds") {
+      const ids = body.variables.ids as string[];
+      const missing: number[] = [];
+      const nodes = ids.map((id, index) => {
+        const found = world.repos
+          .filter((entry) => (entry.installationId ?? 1) === seen.installation)
+          .flatMap((entry) => [
+            ...entry.issues.map((issue) => ({ issue, repo: entry })),
+            ...world.hidden
+              .filter((issue) => issue.repo === entry.name)
+              .map((issue) => ({ issue, repo: entry })),
+          ])
+          .find((entry) => entry.issue.id === id);
+        if (found === undefined) missing.push(index);
+        return found === undefined ? null : fakeNode(found.issue, true);
+      });
+      // GitHub answers with the node `null` and a NOT_FOUND entry per missing id.
+      return HttpResponse.json({
+        data: { rateLimit, nodes },
+        ...(missing.length === 0
+          ? {}
+          : {
+              errors: missing.map((index) => ({
+                type: "NOT_FOUND",
+                path: ["nodes", index],
+                message: `Could not resolve to a node with the global id of '${ids[index] ?? ""}'`,
+              })),
+            }),
       });
     }
     if (name === "IssueConnectionsPage") {
@@ -290,6 +327,7 @@ export function createFakeSyncGithub() {
     graphql,
     reset: () => {
       world.repos = [];
+      world.hidden = [];
       world.requests = [];
       world.failWith = undefined;
     },

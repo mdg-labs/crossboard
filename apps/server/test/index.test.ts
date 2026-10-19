@@ -473,6 +473,78 @@ describe("process entry", () => {
       }
     });
 
+    it("removes the issues a resumed sync no longer returns", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.db
+        .insert(schema.repos)
+        .values({
+          id: "R_1",
+          databaseId: 1,
+          installationId: INSTALLATION_ID,
+          owner: "octocat",
+          name: "repo-1",
+          private: false,
+          syncState: "syncing",
+          openIssueCount: 4,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.db
+        .insert(schema.issues)
+        .values({
+          id: "I_stale",
+          databaseId: 99,
+          repoId: "R_1",
+          number: 99,
+          title: "Deleted on GitHub",
+          url: "https://github.test/octocat/repo-1/issues/99",
+          subTotal: 0,
+          subCompleted: 0,
+          blockedByTotal: 0,
+          blockingTotal: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          syncedAt: 1,
+        })
+        .run();
+      seed.db
+        .insert(schema.issueRefs)
+        .values({
+          id: "I_stale",
+          repoFullName: "octocat/repo-1",
+          number: 99,
+          title: "Deleted on GitHub",
+          state: "OPEN",
+          url: "https://github.test/octocat/repo-1/issues/99",
+          seenAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(...repoWithIssues());
+      try {
+        const entry = await start();
+        await until(() => readyWithIssues(entry));
+        expect(issueIds(entry)).toEqual([
+          { id: "I_1" },
+          { id: "I_2" },
+          { id: "I_3" },
+        ]);
+        expect(
+          entry.database.sqlite.prepare("SELECT id FROM issue_refs").all(),
+        ).toEqual([]);
+      } finally {
+        fake.close();
+      }
+    });
+
     it("discovers and syncs an installation when an access computation makes it active", async () => {
       const seed = openAndMigrate(dataDir);
       const live = signIn(seed.db, addUser(seed.db, "octocat").id);

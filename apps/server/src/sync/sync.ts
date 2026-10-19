@@ -11,7 +11,6 @@ import type { Jobs } from "../jobs/index.js";
 import { repositoryStateSchema, skipReason } from "./discovery.js";
 import { completeConnections } from "./connections.js";
 import {
-  deleteIssues,
   deleteUnusedLabels,
   issueNodeSchema,
   storedIssueIds,
@@ -50,6 +49,8 @@ export interface SyncOptions {
   installations: Pick<InstallationClient, "graphql">;
   /** Whether the installation is active now (SPEC FR-3). */
   isActive: (installationId: number) => boolean;
+  /** Looks up issues by node id and updates or removes them (SPEC §8.2); resolves to its GraphQL cost. */
+  refetch: (ids: string[]) => Promise<number>;
   logger: Logger;
   now?: () => number;
 }
@@ -60,8 +61,10 @@ export interface Sync {
   /**
    * Runs a repository's initial sync (SPEC §6.1): checks that it is neither
    * archived nor issues-disabled (marking it `skipped` when it is), pages its
-   * open issues, and replaces the repo's issues, labels and assignees in one
-   * transaction. The repo goes `syncing`, then `ready`; a failure that
+   * open issues, and replaces the repo's issues, labels, assignees, refs and
+   * edges in one transaction. Issues the pages no longer return are not
+   * deleted there; once it commits they are looked up again and removed by the
+   * SPEC §8.2 rules. The repo goes `syncing`, then `ready`; a failure that
    * outlasts the client's retries leaves it `error` with the message and
    * nothing replaced. Resolves to `skipped` for a repo that is gone, skipped,
    * already syncing here, or whose installation is unknown, suspended or no
@@ -83,6 +86,7 @@ export function createSync({
   db,
   installations: github,
   isActive,
+  refetch,
   logger,
   now = Date.now,
 }: SyncOptions): Sync {
@@ -248,7 +252,7 @@ export function createSync({
     }
 
     const at = now();
-    const written = db.transaction((tx) => {
+    const replaced = db.transaction((tx) => {
       const current = tx
         .select({ syncState: repos.syncState })
         .from(repos)
@@ -259,30 +263,63 @@ export function createSync({
         current.syncState !== "syncing" ||
         !usable(installationId)
       ) {
-        return false;
+        return undefined;
       }
       writeIssues(tx, repoId, fetched, at);
       writeRelations(tx, fullName, fetched, at);
       const returned = new Set(fetched.map((issue) => issue.id));
-      deleteIssues(
-        tx,
-        storedIssueIds(tx, repoId).filter((id) => !returned.has(id)),
-      );
       deleteUnusedLabels(tx, repoId);
       tx.update(repos)
-        .set({
-          syncState: "ready",
-          syncDetail: null,
-          openIssueCount: fetched.length,
-          lastFullSyncAt: at,
-          reconcileSince: new Date(startedAt).toISOString(),
-          updatedAt: at,
-        })
+        .set({ openIssueCount: fetched.length, updatedAt: at })
         .where(eq(repos.id, repoId))
         .run();
-      return true;
+      return storedIssueIds(tx, repoId).filter((id) => !returned.has(id));
     });
-    if (!written) {
+    if (replaced === undefined) {
+      abandon(repoId);
+      logger.info(
+        { installationId, repo: fullName },
+        "repository sync discarded: the repository or its installation changed",
+      );
+      return "skipped";
+    }
+
+    // The repo stays `syncing` until the dropped issues are dealt with, so a
+    // failure here is retried by the next sync and a restart resumes it.
+    if (replaced.length > 0) {
+      try {
+        cost += await refetch(replaced);
+      } catch (error) {
+        logger.error(
+          { err: error, installationId, repo: fullName },
+          "repository sync failed removing the issues it no longer returns",
+        );
+        if (
+          !update(
+            repoId,
+            installationId,
+            { syncState: "error", syncDetail: messageOf(error) },
+            ["syncing"],
+          )
+        ) {
+          abandon(repoId);
+        }
+        return "error";
+      }
+    }
+    if (
+      !update(
+        repoId,
+        installationId,
+        {
+          syncState: "ready",
+          syncDetail: null,
+          lastFullSyncAt: now(),
+          reconcileSince: new Date(startedAt).toISOString(),
+        },
+        ["syncing"],
+      )
+    ) {
       abandon(repoId);
       logger.info(
         { installationId, repo: fullName },
@@ -291,7 +328,14 @@ export function createSync({
       return "skipped";
     }
     logger.info(
-      { installationId, repo: fullName, issues: fetched.length, pages, cost },
+      {
+        installationId,
+        repo: fullName,
+        issues: fetched.length,
+        dropped: replaced.length,
+        pages,
+        cost,
+      },
       "repository synced",
     );
     return "synced";

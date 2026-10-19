@@ -7,6 +7,7 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
 import type { GithubAppCredentials } from "../src/config/index.js";
 import { schema } from "../src/db/index.js";
@@ -18,6 +19,8 @@ import {
 import { queries } from "../src/github/queries/index.js";
 import { createJobs } from "../src/jobs/index.js";
 import { createLogger } from "../src/logger.js";
+import { createRemoval } from "../src/sync/remove.js";
+import { createRefetch, REFETCH_BATCH } from "../src/sync/refetch.js";
 import {
   createSync,
   enqueueSyncAtStart,
@@ -71,7 +74,7 @@ afterEach(() => {
   database.cleanup();
 });
 
-function build(now?: () => number) {
+function buildAll(now?: () => number) {
   const logger = createLogger("trace", {
     write: (chunk) => logs.push(JSON.parse(chunk)),
   });
@@ -85,14 +88,26 @@ function build(now?: () => number) {
     github: client,
     credentials: () => credentials,
   });
-  return createSync({
+  const clock = now === undefined ? {} : { now };
+  const refetch = createRefetch({
     db: database.db,
     installations,
     isActive: (id) => active.has(id),
     logger,
-    ...(now === undefined ? {} : { now }),
+    ...clock,
   });
+  const sync = createSync({
+    db: database.db,
+    installations,
+    isActive: (id) => active.has(id),
+    refetch: (ids) => refetch.refetch(ids),
+    logger,
+    ...clock,
+  });
+  return { sync, refetch };
 }
+
+const build = (now?: () => number) => buildAll(now).sync;
 
 function addInstallation(id: number, suspended = false) {
   database.db
@@ -131,6 +146,7 @@ function addRepo(
       updatedAt: 1,
     })
     .run();
+  repo.installationId = installationId;
   github.world.repos.push(repo);
 }
 
@@ -885,5 +901,634 @@ describe("relations", () => {
     expect(issueRows()).toEqual([]);
     expect(refRows()).toEqual([]);
     expect(depRows()).toEqual([]);
+  });
+});
+
+describe("removing and refetching issues", () => {
+  const ref = (
+    number: number,
+    repo = "acme/web",
+    state: "OPEN" | "CLOSED" = "OPEN",
+  ): FakeRef => ({
+    // the id `issue` gives an issue with this number, in whichever repo
+    id: `I_${String(number)}`,
+    repo,
+    number,
+    state,
+  });
+  const refRows = () => database.db.select().from(schema.issueRefs).all();
+  const depRows = () =>
+    database.db
+      .select({
+        blocked: schema.issueDeps.blockedId,
+        blocking: schema.issueDeps.blockingId,
+      })
+      .from(schema.issueDeps)
+      .orderBy(schema.issueDeps.blockedId, schema.issueDeps.blockingId)
+      .all();
+  const issueIds = () => issueRows().map((row) => row.id);
+  const refOf = (id: string) => refRows().find((row) => row.id === id);
+
+  /** Stores issues, refs and edges directly, as an earlier sync would have left them. */
+  function seed(
+    repoId: string,
+    synced: number[],
+    edges: [blocked: number, blocking: number][],
+    unsynced: number[] = [],
+  ) {
+    for (const number of synced) {
+      database.db
+        .insert(schema.issues)
+        .values({
+          id: `I_${String(number)}`,
+          databaseId: number,
+          repoId,
+          number,
+          title: `Issue ${String(number)}`,
+          url: `https://github.test/acme/web/issues/${String(number)}`,
+          subTotal: 0,
+          subCompleted: 0,
+          blockedByTotal: 0,
+          blockingTotal: 0,
+          createdAt: 1,
+          updatedAt: 1,
+          syncedAt: 1,
+        })
+        .run();
+    }
+    for (const number of [...synced, ...unsynced]) {
+      database.db
+        .insert(schema.issueRefs)
+        .values({
+          id: `I_${String(number)}`,
+          repoFullName: "acme/web",
+          number,
+          title: `Issue ${String(number)}`,
+          state: "OPEN",
+          url: `https://github.test/acme/web/issues/${String(number)}`,
+          seenAt: 1,
+        })
+        .run();
+    }
+    for (const [blocked, blocking] of edges) {
+      database.db
+        .insert(schema.issueDeps)
+        .values({
+          blockedId: `I_${String(blocked)}`,
+          blockingId: `I_${String(blocking)}`,
+        })
+        .run();
+    }
+  }
+
+  describe("the removal", () => {
+    beforeEach(() => {
+      addInstallation(1);
+      addRepo({ name: "acme/web", id: "R_1", issues: [] });
+      // 1 is blocked by 2, 2 is blocked by 3, 4 is blocked by 2; 5 is not synced
+      seed(
+        "R_1",
+        [1, 2, 3, 4],
+        [
+          [1, 2],
+          [2, 3],
+          [4, 2],
+          [4, 5],
+        ],
+        [5],
+      );
+    });
+
+    it("removes a closed issue: its row and the edges where it is blocked go, its ref turns CLOSED and the edges where it blocks stay", async () => {
+      const refetch = vi.fn(() => Promise.resolve(0));
+      await createRemoval({ db: database.db, refetch }).remove(
+        ["I_2"],
+        "closed",
+      );
+
+      expect(issueIds()).toEqual(["I_1", "I_3", "I_4"]);
+      expect(refOf("I_2")?.state).toBe("CLOSED");
+      expect(depRows()).toEqual([
+        { blocked: "I_1", blocking: "I_2" },
+        { blocked: "I_4", blocking: "I_2" },
+        { blocked: "I_4", blocking: "I_5" },
+      ]);
+      expect(refetch).not.toHaveBeenCalled();
+    });
+
+    it("removes a gone issue: its row, its ref and every edge that mentions it go, after the synced issues on the other side were refetched", async () => {
+      const seenWhenRefetched: unknown[] = [];
+      const refetch = vi.fn((ids: string[]) => {
+        seenWhenRefetched.push([...ids].sort(), depRows().length, issueIds());
+        return Promise.resolve(0);
+      });
+      await createRemoval({ db: database.db, refetch }).remove(["I_2"], "gone");
+
+      // 1, 3 and 4 are synced neighbours of 2; 5 is not a neighbour of 2
+      expect(seenWhenRefetched).toEqual([
+        ["I_1", "I_3", "I_4"],
+        4,
+        ["I_1", "I_2", "I_3", "I_4"],
+      ]);
+      expect(issueIds()).toEqual(["I_1", "I_3", "I_4"]);
+      expect(refOf("I_2")).toBeUndefined();
+      expect(depRows()).toEqual([{ blocked: "I_4", blocking: "I_5" }]);
+    });
+
+    it("does not refetch an unsynced counterpart", async () => {
+      const refetch = vi.fn(() => Promise.resolve(0));
+      await createRemoval({ db: database.db, refetch }).remove(["I_5"], "gone");
+      expect(refetch).toHaveBeenCalledWith(["I_4"]);
+      expect(refOf("I_5")).toBeUndefined();
+    });
+
+    it("deletes nothing and throws when the refetch fails, so it can be retried", async () => {
+      const failing = createRemoval({
+        db: database.db,
+        refetch: () => Promise.reject(new Error("GitHub is down")),
+      });
+      await expect(failing.remove(["I_2"], "gone")).rejects.toThrow(
+        "GitHub is down",
+      );
+      expect(issueIds()).toEqual(["I_1", "I_2", "I_3", "I_4"]);
+      expect(depRows()).toHaveLength(4);
+
+      const working = createRemoval({
+        db: database.db,
+        refetch: () => Promise.resolve(0),
+      });
+      await working.remove(["I_2"], "gone");
+      expect(issueIds()).toEqual(["I_1", "I_3", "I_4"]);
+    });
+
+    it("leaves an issue an enclosing removal is already removing to that removal", async () => {
+      const inner: string[][] = [];
+      const removal = createRemoval({
+        db: database.db,
+        refetch: async (ids) => {
+          // the neighbours are found gone as well, and list the issue being removed
+          inner.push(ids);
+          await removal.remove(["I_1", "I_2"], "gone");
+          return 0;
+        },
+      });
+      await removal.remove(["I_2"], "gone");
+      expect(inner).toHaveLength(1);
+      expect(issueIds()).toEqual(["I_3", "I_4"]);
+      expect(refOf("I_2")).toBeUndefined();
+      expect(refOf("I_1")).toBeUndefined();
+    });
+  });
+
+  describe("the refetch", () => {
+    it("fetches in batches of 50 and updates each issue with its labels, assignees, refs and edges", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: Array.from({ length: 120 }, (_, index) => issue(index + 1)),
+      };
+      addRepo(web);
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      github.world.requests.length = 0;
+
+      web.issues = web.issues.map((entry) =>
+        entry.number === 7
+          ? {
+              ...entry,
+              title: "Seven, renamed",
+              labels: [{ id: "L_new", name: "new", color: "00ff00" }],
+              assignees: [
+                { login: "carol", avatarUrl: "https://a.test/carol" },
+              ],
+              blockedBy: Array.from({ length: 25 }, (_, n) =>
+                ref(500 + n, "acme/api"),
+              ),
+              parent: ref(8),
+            }
+          : entry,
+      );
+      await refetch.refetch(web.issues.map((entry) => entry.id));
+
+      expect(REFETCH_BATCH).toBe(50);
+      expect(
+        github
+          .requestsFor("IssuesByIds")
+          .map((request) => (request.variables.ids as string[]).length),
+      ).toEqual([50, 50, 20]);
+      expect(
+        github
+          .requestsFor("IssueConnectionsPage")
+          .map((request) => request.variables.id),
+      ).toEqual(["I_7"]);
+      expect(issueRows().find((row) => row.number === 7)).toMatchObject({
+        title: "Seven, renamed",
+        parentId: "I_8",
+      });
+      expect(
+        database.db
+          .select()
+          .from(schema.labels)
+          .all()
+          .map((row) => row.name),
+      ).toEqual(["new"]);
+      expect(database.db.select().from(schema.issueAssignees).all()).toEqual([
+        { issueId: "I_7", login: "carol", avatarUrl: "https://a.test/carol" },
+      ]);
+      expect(depRows()).toHaveLength(25);
+      expect(refOf("I_8")).toBeDefined();
+      expect(issueRows()).toHaveLength(120);
+    });
+
+    it("fetches each issue with the token of the installation of its repo", async () => {
+      addInstallation(1);
+      addInstallation(2);
+      addRepo({ name: "acme/web", id: "R_1", issues: [issue(1)] }, 1);
+      addRepo(
+        {
+          name: "acme/api",
+          id: "R_2",
+          issues: [issue(2, { repo: "acme/api" })],
+        },
+        2,
+      );
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      await sync.syncRepo("R_2");
+      github.world.requests.length = 0;
+
+      await refetch.refetch(["I_1", "I_2"]);
+
+      expect(
+        github
+          .requestsFor("IssuesByIds")
+          .map((request) => [request.installation, request.variables.ids])
+          .sort(),
+      ).toEqual([
+        [1, ["I_1"]],
+        [2, ["I_2"]],
+      ]);
+      expect(issueIds()).toEqual(["I_1", "I_2"]);
+    });
+
+    it("leaves ids that are not synced issues and issues of an inactive installation alone", async () => {
+      addInstallation(1);
+      addRepo({ name: "acme/web", id: "R_1", issues: [issue(1)] }, 1);
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      github.world.requests.length = 0;
+
+      await refetch.refetch(["I_unknown"]);
+      active.delete(1);
+      await refetch.refetch(["I_1"]);
+
+      expect(github.world.requests).toEqual([]);
+      expect(issueIds()).toEqual(["I_1"]);
+    });
+
+    it("removes a closed result as closed and a null one as gone, finding the gone one in a batch with others", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [
+          issue(1, { blockedBy: [ref(2)] }),
+          issue(2, { blockedBy: [ref(3)] }),
+          issue(3, { blockedBy: [ref(4)] }),
+          issue(4),
+        ],
+      };
+      addRepo(web);
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      // 2 closes, 3 is deleted
+      web.issues = [
+        web.issues[0] as FakeIssue,
+        { ...(web.issues[1] as FakeIssue), state: "CLOSED" },
+        web.issues[3] as FakeIssue,
+      ];
+      github.world.requests.length = 0;
+
+      await refetch.refetch(["I_1", "I_2", "I_3", "I_4"]);
+
+      expect(issueIds()).toEqual(["I_1", "I_4"]);
+      expect(refOf("I_2")?.state).toBe("CLOSED");
+      expect(refOf("I_3")).toBeUndefined();
+      expect(depRows()).toEqual([{ blocked: "I_1", blocking: "I_2" }]);
+      // the NOT_FOUND of the batch is narrowed down to the id GitHub cannot resolve
+      expect(
+        github
+          .requestsFor("IssuesByIds")
+          .some((request) => (request.variables.ids as string[]).length === 1),
+      ).toBe(true);
+    });
+
+    it("replaces a cross-repo edge that is gone on GitHub, and keeps one it still returns", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [
+          issue(1, { blockedBy: [ref(9, "acme/api"), ref(8, "acme/api")] }),
+        ],
+      };
+      addRepo(web);
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      expect(depRows()).toEqual([
+        { blocked: "I_1", blocking: "I_8" },
+        { blocked: "I_1", blocking: "I_9" },
+      ]);
+
+      web.issues = [issue(1, { blockedBy: [ref(8, "acme/api")] })];
+      await refetch.refetch(["I_1"]);
+
+      expect(depRows()).toEqual([{ blocked: "I_1", blocking: "I_8" }]);
+    });
+
+    it("resolves to the cost of every query it sent", async () => {
+      addInstallation(1);
+      addRepo({ name: "acme/web", id: "R_1", issues: [issue(1), issue(2)] });
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      github.world.requests.length = 0;
+
+      expect(await refetch.refetch(["I_1", "I_2"])).toBe(COST);
+      expect(github.requestsFor("IssuesByIds")).toHaveLength(1);
+      expect(
+        logs.find((entry) => entry.msg === "issues refetched"),
+      ).toMatchObject({ installationId: 1, issues: 2, cost: COST });
+    });
+
+    it("stores nothing when GitHub fails part-way", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1), issue(2)],
+      };
+      addRepo(web);
+      const { sync, refetch } = buildAll();
+      await sync.syncRepo("R_1");
+      web.issues = [
+        issue(1, { title: "changed" }),
+        issue(2, { title: "changed" }),
+      ];
+      github.world.failWith = (request) =>
+        request.name === "IssuesByIds" ? 502 : undefined;
+
+      await expect(refetch.refetch(["I_1", "I_2"])).rejects.toThrow("boom");
+
+      expect(issueRows().map((row) => row.title)).toEqual([
+        "Issue 1",
+        "Issue 2",
+      ]);
+    });
+  });
+
+  describe("the sync's dropped issues", () => {
+    it("keeps a closed blocker struck through on the issue it blocked", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1, { blockedBy: [ref(2)] }), issue(2)],
+      };
+      addRepo(web);
+      const sync = build();
+      await sync.syncRepo("R_1");
+      expect(refOf("I_2")?.state).toBe("OPEN");
+
+      web.issues = [
+        issue(1, { blockedBy: [ref(2, "acme/web", "CLOSED")] }),
+        { ...issue(2), state: "CLOSED" },
+      ];
+      expect(await sync.syncRepo("R_1")).toBe("synced");
+
+      expect(issueIds()).toEqual(["I_1"]);
+      expect(refOf("I_2")?.state).toBe("CLOSED");
+      expect(depRows()).toEqual([{ blocked: "I_1", blocking: "I_2" }]);
+      expect(issueRows()[0]).toMatchObject({ blockedByTotal: 1 });
+      expect(repoRow("R_1")).toMatchObject({
+        syncState: "ready",
+        openIssueCount: 1,
+      });
+    });
+
+    it.each([
+      ["is gone for good", 0, 0],
+      ["is no longer readable", 1, 1],
+    ])(
+      "forgets a cross-repo blocker that %s and refetches the issue it blocked, so its not-accessible count follows FR-24",
+      async (_label, totalAfter, notAccessible) => {
+        addInstallation(1);
+        const blocker = issue(9, { repo: "acme/api", blocking: [ref(1)] });
+        const api: FakeRepo = {
+          name: "acme/api",
+          id: "R_2",
+          issues: [blocker],
+        };
+        const web: FakeRepo = {
+          name: "acme/web",
+          id: "R_1",
+          issues: [issue(1, { blockedBy: [ref(9, "acme/api")] })],
+        };
+        addRepo(web, 1);
+        addRepo(api, 1);
+        const sync = build();
+        await sync.syncRepo("R_1");
+        await sync.syncRepo("R_2");
+        expect(depRows()).toEqual([{ blocked: "I_1", blocking: "I_9" }]);
+
+        api.issues = [];
+        web.issues = [
+          issue(1, {
+            title: "Refetched",
+            blockedBy: [],
+            totalBlockedBy: totalAfter,
+          }),
+        ];
+        github.world.requests.length = 0;
+        await sync.syncRepo("R_2");
+
+        expect(issueIds()).toEqual(["I_1"]);
+        expect(refOf("I_9")).toBeUndefined();
+        expect(depRows()).toEqual([]);
+        const stored = issueRows()[0];
+        expect(stored?.title).toBe("Refetched");
+        expect(
+          Math.max(0, (stored?.blockedByTotal ?? 0) - depRows().length),
+        ).toBe(notAccessible);
+      },
+    );
+
+    it("refetches a counterpart in another installation's repo with that installation's token and does not remove it", async () => {
+      addInstallation(1);
+      addInstallation(2);
+      const api: FakeRepo = {
+        name: "acme/api",
+        id: "R_2",
+        issues: [issue(9, { repo: "acme/api", blocking: [ref(1)] })],
+      };
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1, { blockedBy: [ref(9, "acme/api")] })],
+      };
+      addRepo(web, 2);
+      addRepo(api, 1);
+      const sync = build();
+      await sync.syncRepo("R_1");
+      await sync.syncRepo("R_2");
+
+      api.issues = [];
+      web.issues = [issue(1, { title: "Still here", totalBlockedBy: 1 })];
+      github.world.requests.length = 0;
+      await sync.syncRepo("R_2");
+
+      expect(
+        github
+          .requestsFor("IssuesByIds")
+          .map((request) => [request.installation, request.variables.ids]),
+      ).toEqual([
+        [1, ["I_9"]],
+        [2, ["I_1"]],
+      ]);
+      expect(issueRows().map((row) => [row.id, row.title])).toEqual([
+        ["I_1", "Still here"],
+      ]);
+      expect(refOf("I_9")).toBeUndefined();
+      expect(depRows()).toEqual([]);
+    });
+
+    it("does not delete a dropped issue in the replacing transaction: a failed lookup leaves it, marks the repo error, and the next sync removes it", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1), issue(2)],
+      };
+      addRepo(web);
+      const sync = build();
+      await sync.syncRepo("R_1");
+
+      web.issues = [issue(1, { title: "Renamed" })];
+      github.world.failWith = (request) =>
+        request.name === "IssuesByIds" ? 502 : undefined;
+      expect(await sync.syncRepo("R_1")).toBe("error");
+
+      expect(issueRows().map((row) => [row.id, row.title])).toEqual([
+        ["I_1", "Renamed"],
+        ["I_2", "Issue 2"],
+      ]);
+      expect(repoRow("R_1")).toMatchObject({
+        syncState: "error",
+        syncDetail: "boom",
+        openIssueCount: 1,
+      });
+
+      github.world.failWith = undefined;
+      expect(await sync.syncRepo("R_1")).toBe("synced");
+      expect(issueIds()).toEqual(["I_1"]);
+      expect(repoRow("R_1")?.syncState).toBe("ready");
+    });
+
+    it("counts the cost of the refetches a dropped issue's removal needs in the sync's cost", async () => {
+      addInstallation(1);
+      const api: FakeRepo = {
+        name: "acme/api",
+        id: "R_2",
+        issues: [issue(9, { repo: "acme/api", blocking: [ref(1)] })],
+      };
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1, { blockedBy: [ref(9, "acme/api")] })],
+      };
+      addRepo(web);
+      addRepo(api);
+      const sync = build();
+      await sync.syncRepo("R_1");
+      await sync.syncRepo("R_2");
+
+      // 9 is deleted: its lookup finds nothing, then the issue it blocked is refetched
+      api.issues = [];
+      logs.length = 0;
+      await sync.syncRepo("R_2");
+
+      expect(github.requestsFor("IssuesByIds")).toHaveLength(2);
+      // the repository check, the page and the refetch of issue 1; a lookup that
+      // ends in NOT_FOUND reports no cost
+      expect(
+        logs.find((entry) => entry.msg === "repository synced"),
+      ).toMatchObject({ dropped: 1, cost: 3 * COST });
+    });
+
+    it("returns the repo to pending when the installation stops being active during the dropped-issue refetch", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1), issue(2)],
+      };
+      addRepo(web);
+      const sync = build();
+      await sync.syncRepo("R_1");
+
+      web.issues = [issue(1)];
+      github.world.failWith = (request) => {
+        if (request.name === "IssuesByIds") active.delete(1);
+        return undefined;
+      };
+      expect(await sync.syncRepo("R_1")).toBe("skipped");
+
+      expect(repoRow("R_1")?.syncState).toBe("pending");
+    });
+
+    it("returns the repo to pending when the installation stops being active while the dropped-issue refetch fails", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1), issue(2)],
+      };
+      addRepo(web);
+      const sync = build();
+      await sync.syncRepo("R_1");
+
+      web.issues = [issue(1)];
+      github.world.failWith = (request) => {
+        if (request.name !== "IssuesByIds") return undefined;
+        active.delete(1);
+        return 502;
+      };
+      expect(await sync.syncRepo("R_1")).toBe("error");
+
+      expect(repoRow("R_1")?.syncState).toBe("pending");
+    });
+
+    it("updates a dropped issue that is still open instead of removing it", async () => {
+      addInstallation(1);
+      const web: FakeRepo = {
+        name: "acme/web",
+        id: "R_1",
+        issues: [issue(1), issue(2)],
+      };
+      addRepo(web);
+      const sync = build();
+      await sync.syncRepo("R_1");
+
+      // the pages leave issue 2 out, but looking it up finds it open
+      const kept = issue(2, { title: "Found again" });
+      web.issues = [issue(1)];
+      github.world.hidden = [kept];
+      await sync.syncRepo("R_1");
+
+      expect(issueRows().map((row) => [row.id, row.title])).toEqual([
+        ["I_1", "Issue 1"],
+        ["I_2", "Found again"],
+      ]);
+    });
   });
 });

@@ -8,17 +8,8 @@ const PAGE_INFO = `pageInfo { hasNextPage endCursor }`;
 const LABEL_NODES = `nodes { id name color description }`;
 const ASSIGNEE_NODES = `nodes { login avatarUrl }`;
 
-/** One page of a repository's open issues with the SPEC §5.3 selection. */
-export const openIssuesPage: GithubQuery = {
-  name: "OpenIssuesPage",
-  document: `
-query OpenIssuesPage($owner: String!, $name: String!, $after: String) {
-  rateLimit { cost remaining resetAt }
-  repository(owner: $owner, name: $name) {
-    issues(states: OPEN, first: 100, after: $after) {
-      totalCount
-      pageInfo { hasNextPage endCursor }
-      nodes {
+/** The SPEC §5.3 selection of one issue. */
+const ISSUE_FIELDS = `
         id databaseId number title url createdAt updatedAt
         author { login }
         issueType { name color }
@@ -29,8 +20,39 @@ query OpenIssuesPage($owner: String!, $name: String!, $after: String) {
         subIssuesSummary { total completed }
         issueDependenciesSummary { totalBlockedBy totalBlocking }
         blockedBy(first: 20) { totalCount ${PAGE_INFO} nodes { ${NESTED_ISSUE} } }
-        blocking(first: 20) { totalCount ${PAGE_INFO} nodes { ${NESTED_ISSUE} } }
+        blocking(first: 20) { totalCount ${PAGE_INFO} nodes { ${NESTED_ISSUE} } }`;
+
+/** One page of a repository's open issues with the SPEC §5.3 selection. */
+export const openIssuesPage: GithubQuery = {
+  name: "OpenIssuesPage",
+  document: `
+query OpenIssuesPage($owner: String!, $name: String!, $after: String) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    issues(states: OPEN, first: 100, after: $after) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {${ISSUE_FIELDS}
       }
+    }
+  }
+}
+`,
+};
+
+/**
+ * Up to 50 issues by node id with the SPEC §5.3 selection and their state
+ * (SPEC §6.2). A node the token cannot resolve comes back `null`, with a
+ * `NOT_FOUND` entry in the response's `errors`.
+ */
+export const issuesByIds: GithubQuery = {
+  name: "IssuesByIds",
+  document: `
+query IssuesByIds($ids: [ID!]!) {
+  rateLimit { cost remaining resetAt }
+  nodes(ids: $ids) {
+    ... on Issue {
+      state${ISSUE_FIELDS}
     }
   }
 }
