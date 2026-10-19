@@ -19,6 +19,16 @@ export function IssueRoute(): React.ReactElement {
       ? { owner: params.owner, repo: params.repo, number }
       : null;
 
+  const openIssue = (next: IssueRef) =>
+    void navigate({
+      to: "/i/$owner/$repo/$number",
+      params: {
+        owner: next.owner,
+        repo: next.repo,
+        number: String(next.number),
+      },
+    });
+
   return (
     <div className="flex flex-col gap-4 p-6">
       <Link
@@ -41,21 +51,8 @@ export function IssueRoute(): React.ReactElement {
         </Alert>
       ) : (
         <>
-          <PageDetailHeader issue={issue} />
-          <IssueDetail
-            issue={issue}
-            wide
-            onOpenIssue={(next) =>
-              void navigate({
-                to: "/i/$owner/$repo/$number",
-                params: {
-                  owner: next.owner,
-                  repo: next.repo,
-                  number: String(next.number),
-                },
-              })
-            }
-          />
+          <PageDetailHeader issue={issue} onOpenIssue={openIssue} />
+          <IssueDetail issue={issue} onOpenIssue={openIssue} wide />
         </>
       )}
     </div>

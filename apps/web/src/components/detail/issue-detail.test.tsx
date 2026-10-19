@@ -9,7 +9,12 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueDetail } from "@/components/detail/issue-detail";
-import { details, relation, summary } from "@/components/detail/test-data";
+import {
+  details,
+  relation,
+  subIssue,
+  summary,
+} from "@/components/detail/test-data";
 import { createQueryClient } from "@/lib/query-client";
 
 afterEach(() => {
@@ -366,22 +371,12 @@ describe("the issue detail", () => {
               total: 53,
               notAccessible: 1,
               items: [
-                {
-                  owner: "acme",
-                  repo: "widgets",
-                  number: 5,
+                subIssue(5, {
                   title: "Done sub",
                   state: "CLOSED",
-                  url: "https://github.com/acme/widgets/issues/5",
-                },
-                {
-                  owner: "acme",
-                  repo: "widgets",
-                  number: 6,
-                  title: "Open sub",
-                  state: "OPEN",
-                  url: "https://github.com/acme/widgets/issues/6",
-                },
+                  synced: false,
+                }),
+                subIssue(6, { title: "Open sub" }),
               ],
             },
           }),
@@ -423,16 +418,7 @@ describe("the issue detail", () => {
             subIssues: {
               total: 1,
               notAccessible: 0,
-              items: [
-                {
-                  owner: "acme",
-                  repo: "widgets",
-                  number: 5,
-                  title: "Only sub",
-                  state: "OPEN",
-                  url: "https://github.com/acme/widgets/issues/5",
-                },
-              ],
+              items: [subIssue(5, { title: "Only sub" })],
             },
           }),
         ),
@@ -442,6 +428,157 @@ describe("the issue detail", () => {
     await screen.findByText("Only sub");
     expect(screen.queryByText(/more on GitHub/)).toBeNull();
     expect(screen.queryByText(/earlier comment/)).toBeNull();
+  });
+
+  describe("the sub-issue tree", () => {
+    const chain = () =>
+      subIssue(2, {
+        subIssues: { total: 2, completed: 1 },
+        children: [
+          subIssue(3, {
+            subIssues: { total: 1, completed: 0 },
+            children: [subIssue(4)],
+          }),
+        ],
+      });
+
+    function stubChain(overrides: Partial<ReturnType<typeof details>> = {}) {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 1, completed: 0 } })),
+        details: () =>
+          Response.json(
+            details({
+              subIssues: { total: 1, notAccessible: 0, items: [chain()] },
+              ...overrides,
+            }),
+          ),
+      });
+    }
+
+    const toggle = (ref: string) =>
+      screen.findByRole("button", { name: `Sub-issues of ${ref}` });
+
+    it("expands each level to the next and shows completed/total per node", async () => {
+      stubChain();
+      renderDetail();
+
+      const child = await screen.findByRole("list", { name: "Sub-issues" });
+      expect(within(child).getByText("1/2")).toBeTruthy();
+      expect(screen.queryByText("Sub-issue 3")).toBeNull();
+
+      fireEvent.click(await toggle("acme/widgets#2"));
+      expect(await screen.findByText("Sub-issue 3")).toBeTruthy();
+      expect(screen.getByText("0/1")).toBeTruthy();
+      expect(screen.queryByText("Sub-issue 4")).toBeNull();
+
+      fireEvent.click(await toggle("acme/widgets#3"));
+      expect(await screen.findByText("Sub-issue 4")).toBeTruthy();
+      expect(
+        screen.getByRole("progressbar", { name: "1 of 2 completed" }),
+      ).toBeTruthy();
+    });
+
+    it("opens a synced node's detail and sends an unsynced one to GitHub", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 2, completed: 0 } })),
+        details: () =>
+          Response.json(
+            details({
+              subIssues: {
+                total: 2,
+                notAccessible: 0,
+                items: [
+                  chain(),
+                  subIssue(9, {
+                    state: "CLOSED",
+                    synced: false,
+                    url: "https://github.com/acme/widgets/issues/9",
+                  }),
+                ],
+              },
+            }),
+          ),
+      });
+      const onOpenIssue = renderDetail();
+
+      fireEvent.click(
+        await screen.findByRole("link", { name: "acme/widgets#2" }),
+      );
+      expect(onOpenIssue).toHaveBeenCalledWith({
+        owner: "acme",
+        repo: "widgets",
+        number: 2,
+      });
+
+      const closed = screen.getByRole("link", { name: "acme/widgets#9" });
+      expect(closed.getAttribute("href")).toBe(
+        "https://github.com/acme/widgets/issues/9",
+      );
+      expect(closed.getAttribute("target")).toBe("_blank");
+      expect(
+        screen.queryByRole("button", { name: "Sub-issues of acme/widgets#9" }),
+      ).toBeNull();
+      expect(onOpenIssue).toHaveBeenCalledTimes(1);
+    });
+
+    it("counts sub-issues the viewer cannot read in the node without naming them", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 1, completed: 0 } })),
+        details: () =>
+          Response.json(
+            details({
+              subIssues: {
+                total: 1,
+                notAccessible: 0,
+                items: [subIssue(2, { notAccessible: 2 })],
+              },
+            }),
+          ),
+      });
+      renderDetail();
+
+      fireEvent.click(await toggle("acme/widgets#2"));
+
+      expect(await screen.findByText("+2 not accessible")).toBeTruthy();
+    });
+
+    it("shows the completed line while the details load and nothing without sub-issues", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 4, completed: 1 } })),
+        details: () => new Promise<Response>(() => undefined),
+      });
+      renderDetail();
+
+      expect(await screen.findByText("1 of 4 completed")).toBeTruthy();
+      expect(screen.queryByRole("list", { name: "Sub-issues" })).toBeNull();
+    });
+
+    it("keeps the stale warning above the tree", async () => {
+      stubChain({ stale: true });
+      renderDetail();
+
+      expect(
+        await screen.findByText("This copy may be out of date"),
+      ).toBeTruthy();
+      expect(
+        await screen.findByRole("list", { name: "Sub-issues" }),
+      ).toBeTruthy();
+    });
+
+    it("shows no sub-issues section for an issue without sub-issues", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () => Response.json(details()),
+      });
+      renderDetail();
+
+      await screen.findByText("fails");
+      expect(screen.queryByText("Sub-issues")).toBeNull();
+    });
   });
 
   describe("the dependency lists", () => {

@@ -3,6 +3,7 @@ import { accessibleRepos, inUserAccess } from "../access/index.js";
 import type { IssueRelationEntry, IssueSummary } from "../api/schemas.js";
 import { schema, type Db } from "../db/index.js";
 import { loadAccessibleIssues, type IssueLocator } from "./filterable.js";
+import { loadAncestors } from "./hierarchy.js";
 
 const { issueDeps, issueRefs, issues } = schema;
 
@@ -19,8 +20,8 @@ const splitFullName = (fullName: string) => {
 /**
  * The summary of one synced issue in the user's access (SPEC §7.4): the issue
  * item with its complete `blockedBy` / `blocking` lists (FR-23) and the
- * parent's title and state. `null` when the issue is not synced or not in the
- * user's access. A relation or parent in a repo outside the access is never
+ * parent's title and state and the ancestor chain (FR-40). `null` when the
+ * issue is not synced or not in the user's access. A relation or parent in a repo outside the access is never
  * named; it only counts toward `notAccessible` (FR-24, §9.1).
  */
 export function loadIssueSummary(
@@ -102,6 +103,7 @@ export function loadIssueSummary(
             title: parentRef.title,
             state: parentRef.state,
           },
+    ancestors: loadAncestors(db, userId, item),
     blockedBy: { ...item.blockedBy, items: blockers.map(entry) },
     blocking: { ...item.blocking, items: blocked.map(entry) },
   };

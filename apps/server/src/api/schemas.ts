@@ -100,6 +100,14 @@ export const issueSummarySchema = issueItemSchema.extend({
       state: issueStateSchema,
     })
     .nullable(),
+  /**
+   * The parent chain, nearest first (SPEC FR-40): the parent, then its parent,
+   * and so on over synced issues in the viewer's access. It ends at the first
+   * parent that is not synced (listed with `synced: false`), at one in a repo
+   * outside the access (never named, FR-24, §9.1) and before an issue it
+   * already holds.
+   */
+  ancestors: z.array(issueRelationSchema),
   blockedBy: relationListSchema,
   blocking: relationListSchema,
 });
@@ -130,13 +138,41 @@ export const subIssueSchema = z.object({
 export type SubIssue = z.infer<typeof subIssueSchema>;
 
 /**
+ * A sub-issue of the details route as the viewer sees it (SPEC FR-40). A
+ * `synced` node has a detail view and carries GitHub's `completed/total`
+ * progress in `subIssues`; its `children` are its synced sub-issues in the
+ * viewer's access, at any depth, and `notAccessible` counts the synced ones
+ * outside it. A node that is not synced has no progress and no children.
+ */
+export type SubIssueNode = SubIssue & {
+  synced: boolean;
+  subIssues: { total: number; completed: number } | null;
+  notAccessible: number;
+  children: SubIssueNode[];
+};
+
+export const subIssueNodeSchema: z.ZodType<SubIssueNode> =
+  subIssueSchema.extend({
+    synced: z.boolean(),
+    subIssues: z
+      .object({
+        total: z.number().int().nonnegative(),
+        completed: z.number().int().nonnegative(),
+      })
+      .nullable(),
+    notAccessible: z.number().int().nonnegative(),
+    children: z.lazy(() => z.array(subIssueNodeSchema)),
+  });
+
+/**
  * The details route's response (SPEC §7.4, FR-42, FR-43): the issue's rendered
- * body, its most recent comments oldest first, and its first sub-issues.
- * `commentsTotal` counts every comment, so the UI can show "N earlier
+ * body, its most recent comments oldest first, and its first sub-issues as a
+ * tree. `commentsTotal` counts every comment, so the UI can show "N earlier
  * comments"; `subIssues.total` counts every sub-issue on GitHub. Sub-issues in
  * a repo outside the viewer's access are left out of `items` and counted in
- * `notAccessible` (SPEC §9.1). `stale` marks a copy that is out of date
- * because the refetch failed.
+ * `notAccessible` (SPEC §9.1), as are the deeper ones in each node's own
+ * `notAccessible`. `stale` marks a copy that is out of date because the
+ * refetch failed.
  */
 export const issueDetailsSchema = z.object({
   bodyHtml: z.string(),
@@ -145,7 +181,7 @@ export const issueDetailsSchema = z.object({
   subIssues: z.object({
     total: z.number().int().nonnegative(),
     notAccessible: z.number().int().nonnegative(),
-    items: z.array(subIssueSchema),
+    items: z.array(subIssueNodeSchema),
   }),
   fetchedAt: z.number().int(),
   stale: z.boolean(),

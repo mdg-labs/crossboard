@@ -187,7 +187,18 @@ function addRepo(
 
 let nextIssue = 1;
 
-function addIssue(repoId: string, number: number, updatedAt = 1000): string {
+interface IssueExtras {
+  parentId?: string;
+  subTotal?: number;
+  subCompleted?: number;
+}
+
+function addIssue(
+  repoId: string,
+  number: number,
+  updatedAt = 1000,
+  extras: IssueExtras = {},
+): string {
   const id = `I_${String(nextIssue++)}`;
   database.db
     .insert(schema.issues)
@@ -203,9 +214,9 @@ function addIssue(repoId: string, number: number, updatedAt = 1000): string {
       typeColor: null,
       milestoneTitle: null,
       milestoneUrl: null,
-      parentId: null,
-      subTotal: 0,
-      subCompleted: 0,
+      parentId: extras.parentId ?? null,
+      subTotal: extras.subTotal ?? 0,
+      subCompleted: extras.subCompleted ?? 0,
       blockedByTotal: 0,
       blockingTotal: 0,
       createdAt: 1000,
@@ -226,7 +237,11 @@ function activate(userId: number, installationId = 1) {
 
 function seedCache(
   issueId: string,
-  options: { fetchedForUpdatedAt?: number; fetchedAt?: number } = {},
+  options: {
+    fetchedForUpdatedAt?: number;
+    fetchedAt?: number;
+    subIssues?: { owner: string; repo: string; number: number }[];
+  } = {},
 ) {
   database.db
     .insert(schema.issueDetails)
@@ -235,7 +250,15 @@ function seedCache(
       bodyHtml: "<p>cached body</p>",
       commentsJson: JSON.stringify([]),
       commentsTotal: 0,
-      subIssuesJson: JSON.stringify({ total: 0, items: [] }),
+      subIssuesJson: JSON.stringify({
+        total: options.subIssues?.length ?? 0,
+        items: (options.subIssues ?? []).map((sub) => ({
+          ...sub,
+          title: `Sub ${String(sub.number)}`,
+          state: "OPEN",
+          url: `https://github.com/${sub.owner}/${sub.repo}/issues/${String(sub.number)}`,
+        })),
+      }),
       fetchedForUpdatedAt: options.fetchedForUpdatedAt ?? 1000,
       fetchedAt: options.fetchedAt ?? Date.now(),
     })
@@ -371,6 +394,10 @@ describe("GET /api/issues/:owner/:repo/:number/details", () => {
             title: "Sub 7",
             state: "OPEN",
             url: "https://github.com/acme/web/issues/7",
+            synced: false,
+            subIssues: null,
+            notAccessible: 0,
+            children: [],
           },
         ],
       },
@@ -782,5 +809,200 @@ describe("GET /api/issues/:owner/:repo/:number/details", () => {
       7, 8, 9,
     ]);
     expect(withAccess.subIssues.notAccessible).toBe(0);
+  });
+});
+
+/** A ref row naming an issue, so another issue can have it as its parent. */
+function parentRef(repoFullName: string, number: number): string {
+  const id = `REF_${repoFullName}_${String(number)}`;
+  database.db
+    .insert(schema.issueRefs)
+    .values({
+      id,
+      repoFullName,
+      number,
+      title: `Ref ${String(number)}`,
+      state: "OPEN",
+      url: `https://github.com/${repoFullName}/issues/${String(number)}`,
+      seenAt: 1,
+    })
+    .onConflictDoNothing()
+    .run();
+  return id;
+}
+
+describe("the sub-issue tree of GET /api/issues/:owner/:repo/:number/details", () => {
+  const sub = (owner: string, repo: string, number: number) => ({
+    owner,
+    repo,
+    number,
+  });
+
+  /** acme/web#1 -> #2 -> #3 -> #4, each with sub-issue progress. */
+  function seedChain(alice: { id: number }) {
+    const repo = addRepo("acme", "web", [alice.id]);
+    addIssue(repo, 1, 1000, { subTotal: 3, subCompleted: 0 });
+    addIssue(repo, 2, 1000, {
+      parentId: parentRef("acme/web", 1),
+      subTotal: 2,
+      subCompleted: 1,
+    });
+    addIssue(repo, 3, 1000, {
+      parentId: parentRef("acme/web", 2),
+      subTotal: 1,
+      subCompleted: 0,
+    });
+    addIssue(repo, 4, 1000, { parentId: parentRef("acme/web", 3) });
+    return repo;
+  }
+
+  async function tree(
+    app: ReturnType<typeof build>,
+    cookie: string,
+    path = "/acme/web/1",
+  ) {
+    const response = await details(app, cookie, path);
+    expect(response.status).toBe(200);
+    return issueDetailsSchema.parse(await response.json()).subIssues;
+  }
+
+  it("nests the synced sub-issues of sub-issues at any depth with their progress", async () => {
+    const fake = fakeInstallations();
+    const alice = addUser(database.db, "octocat");
+    activate(alice.id);
+    seedChain(alice);
+    fake.state.respond = () =>
+      Promise.resolve(
+        answer({ subIssues: { totalCount: 1, nodes: [subIssue(2)] } }),
+      );
+
+    const { items } = await tree(
+      build(fake.client),
+      signIn(database.db, alice.id).cookie,
+    );
+
+    expect(items).toHaveLength(1);
+    const child = items[0];
+    expect(child).toMatchObject({
+      number: 2,
+      synced: true,
+      subIssues: { total: 2, completed: 1 },
+      notAccessible: 0,
+    });
+    const grandchild = child?.children[0];
+    expect(child?.children).toHaveLength(1);
+    expect(grandchild).toMatchObject({
+      number: 3,
+      synced: true,
+      subIssues: { total: 1, completed: 0 },
+    });
+    expect(grandchild?.children.map((node) => node.number)).toEqual([4]);
+    expect(grandchild?.children[0]?.children).toEqual([]);
+  });
+
+  it("keeps a closed or unsynced sub-issue as a leaf that is not synced", async () => {
+    const fake = fakeInstallations();
+    const alice = addUser(database.db, "octocat");
+    activate(alice.id);
+    seedChain(alice);
+    fake.state.respond = () =>
+      Promise.resolve(
+        answer({
+          subIssues: {
+            totalCount: 2,
+            nodes: [{ ...subIssue(50), state: "CLOSED" }, subIssue(2)],
+          },
+        }),
+      );
+
+    const { items } = await tree(
+      build(fake.client),
+      signIn(database.db, alice.id).cookie,
+    );
+
+    expect(items[0]).toMatchObject({
+      number: 50,
+      state: "CLOSED",
+      synced: false,
+      subIssues: null,
+      notAccessible: 0,
+      children: [],
+    });
+    expect(items[1]).toMatchObject({ number: 2, synced: true });
+  });
+
+  it("ends the tree before an issue that repeats through a parent cycle", async () => {
+    const alice = addUser(database.db, "octocat");
+    activate(alice.id);
+    const repo = addRepo("acme", "web", [alice.id]);
+    addIssue(repo, 1, 1000, { parentId: parentRef("acme/web", 3) });
+    addIssue(repo, 2, 1000, { parentId: parentRef("acme/web", 1) });
+    addIssue(repo, 3, 1000, { parentId: parentRef("acme/web", 2) });
+    const issueId = database.db
+      .select()
+      .from(schema.issues)
+      .all()
+      .find((issue) => issue.number === 1)?.id;
+    seedCache(issueId ?? "", { subIssues: [sub("acme", "web", 2)] });
+
+    const { items } = await tree(
+      build(fakeInstallations().client),
+      signIn(database.db, alice.id).cookie,
+    );
+
+    expect(items.map((node) => node.number)).toEqual([2]);
+    expect(items[0]?.children.map((node) => node.number)).toEqual([3]);
+    expect(items[0]?.children[0]?.children).toEqual([]);
+  });
+
+  it("counts descendants in a repo the user cannot read and never names them", async () => {
+    const alice = addUser(database.db, "octocat");
+    const bob = addUser(database.db, "bob");
+    activate(alice.id);
+    activate(bob.id);
+    const web = addRepo("acme", "web", [alice.id, bob.id]);
+    const secret = addRepo("acme", "secret", [alice.id]);
+    const epic = addIssue(web, 1);
+    addIssue(web, 2, 1000, { parentId: parentRef("acme/web", 1) });
+    addIssue(secret, 3, 1000, { parentId: parentRef("acme/web", 2) });
+    addIssue(secret, 4, 1000, { parentId: parentRef("acme/secret", 3) });
+    seedCache(epic, { subIssues: [sub("acme", "web", 2)] });
+    const app = build(fakeInstallations().client);
+
+    const forAlice = await tree(app, signIn(database.db, alice.id).cookie);
+    expect(forAlice.items[0]?.notAccessible).toBe(0);
+    expect(forAlice.items[0]?.children.map((node) => node.number)).toEqual([3]);
+    expect(forAlice.items[0]?.children[0]?.children[0]?.number).toBe(4);
+
+    const forBobResponse = await details(
+      app,
+      signIn(database.db, bob.id).cookie,
+    );
+    const forBob = issueDetailsSchema.parse(await forBobResponse.json());
+    expect(forBob.subIssues.items[0]).toMatchObject({
+      number: 2,
+      notAccessible: 1,
+      children: [],
+    });
+    expect(JSON.stringify(forBob)).not.toContain("secret");
+  });
+
+  it("builds the tree from SQLite and makes one GitHub fetch for a stale issue", async () => {
+    const fake = fakeInstallations();
+    const alice = addUser(database.db, "octocat");
+    activate(alice.id);
+    seedChain(alice);
+    fake.state.respond = () =>
+      Promise.resolve(
+        answer({ subIssues: { totalCount: 1, nodes: [subIssue(2)] } }),
+      );
+
+    const { items } = await tree(
+      build(fake.client),
+      signIn(database.db, alice.id).cookie,
+    );
+
+    expect(items[0]?.children[0]?.children).toHaveLength(1);
+    expect(fake.calls).toHaveLength(1);
   });
 });

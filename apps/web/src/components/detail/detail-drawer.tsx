@@ -53,6 +53,7 @@ export function DetailDrawer({
               expanded={expanded}
               issue={shown.current}
               onExpandedChange={setExpanded}
+              onOpenIssue={onOpenIssue}
             />
             <DrawerPanel>
               <IssueDetail

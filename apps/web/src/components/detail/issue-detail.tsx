@@ -11,6 +11,7 @@ import { MarkdownBody } from "@/components/detail/markdown-body";
 import { PropertiesRail } from "@/components/detail/properties-rail";
 import { RelationList } from "@/components/detail/relation-list";
 import { Section } from "@/components/detail/section";
+import { SubIssueList } from "@/components/detail/sub-issue-tree";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,12 +24,10 @@ import {
   type IssueSummary,
   issueDetailsQuery,
   issueSummaryQuery,
+  refLabel,
 } from "@/lib/issue-detail";
 import { formatAbsoluteTime } from "@/lib/time";
 import { cn } from "@/lib/utils";
-
-const refLabel = (ref: IssueRef): string =>
-  `${ref.owner}/${ref.repo}#${String(ref.number)}`;
 
 function QueryError({
   title,
@@ -153,12 +152,13 @@ function Relations({
 function SubIssues({
   summary,
   details,
+  onOpenIssue,
 }: {
   summary: IssueSummary;
   details: IssueDetails;
+  onOpenIssue: (issue: IssueRef) => void;
 }): React.ReactElement {
   const { subIssues } = details;
-  const origin = githubOrigin(summary.url);
   const more =
     subIssues.total - subIssues.items.length - subIssues.notAccessible;
   const ref = {
@@ -168,45 +168,24 @@ function SubIssues({
   };
 
   return (
-    <ul aria-label="Sub-issues" className="flex flex-col gap-1.5 text-sm">
-      {subIssues.items.map((sub) => (
-        <li
-          className={cn(
-            "flex items-baseline gap-2",
-            sub.state === "CLOSED" && "text-muted-foreground line-through",
-          )}
-          key={`${sub.owner}/${sub.repo}#${String(sub.number)}`}
-        >
-          <ExternalLink
-            className="shrink-0 text-muted-foreground tabular-nums hover:underline"
-            href={sub.url}
-          >
-            {sub.owner}/{sub.repo}#{sub.number}
-          </ExternalLink>
-          <span className="min-w-0 truncate" title={sub.title}>
-            {sub.title}
-          </span>
-          <span className="shrink-0 text-muted-foreground text-xs">
-            {sub.state.toLowerCase()}
-          </span>
-        </li>
-      ))}
-      {subIssues.notAccessible > 0 ? (
-        <li className="text-muted-foreground">
-          +{subIssues.notAccessible} not accessible
-        </li>
-      ) : null}
+    <SubIssueList
+      className="text-sm"
+      label="Sub-issues"
+      nodes={subIssues.items}
+      notAccessible={subIssues.notAccessible}
+      onOpenIssue={onOpenIssue}
+    >
       {more > 0 ? (
         <li>
           <ExternalLink
             className="text-muted-foreground hover:underline"
-            href={issueUrl(origin, ref)}
+            href={issueUrl(githubOrigin(summary.url), ref)}
           >
             +{more} more on GitHub
           </ExternalLink>
         </li>
       ) : null}
-    </ul>
+    </SubIssueList>
   );
 }
 
@@ -305,7 +284,11 @@ export function IssueDetail({
             {data.subIssues.completed} of {data.subIssues.total} completed
           </p>
         ) : (
-          <SubIssues details={details.data} summary={data} />
+          <SubIssues
+            details={details.data}
+            onOpenIssue={onOpenIssue}
+            summary={data}
+          />
         )}
       </Section>
     );

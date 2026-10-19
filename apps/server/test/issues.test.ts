@@ -973,7 +973,12 @@ describe("GET /api/issues/:owner/:repo/:number", () => {
 
     expect(body.repo).toEqual({ owner: "Acme", name: "Web" });
     expect(body.title).toBe("Crash");
-    expect({ ...body, blockedBy: undefined, blocking: undefined }).toEqual({
+    expect({
+      ...body,
+      ancestors: undefined,
+      blockedBy: undefined,
+      blocking: undefined,
+    }).toEqual({
       ...listed,
       blockedBy: undefined,
       blocking: undefined,
@@ -1022,6 +1027,127 @@ describe("GET /api/issues/:owner/:repo/:number", () => {
     expect(bobBody.blockedBy.items.map((entry) => entry.number)).toEqual([8]);
     expect(bobBody.blocking.notAccessible).toBe(1);
     expect(text).not.toContain("secret");
+  });
+
+  describe("ancestors", () => {
+    /** Names the synced issue acme/<repo>#<number> as a parent. */
+    const refTo = (repo: string, number: number) => {
+      const id = `REF_${repo}_${String(number)}`;
+      addRef(id, `acme/${repo}`, number, "OPEN");
+      return id;
+    };
+
+    it("lists the synced parent chain nearest first", async () => {
+      const alice = addUser(database.db, "octocat");
+      const web = addRepo("acme", "web", [alice.id]);
+      addIssue(web, { number: 1, title: "Epic" });
+      addIssue(web, { number: 2, title: "Child", parentId: refTo("web", 1) });
+      addIssue(web, {
+        number: 3,
+        title: "Grandchild",
+        parentId: refTo("web", 2),
+      });
+
+      const body = await summaryBody(
+        signIn(database.db, alice.id).cookie,
+        "/acme/web/3",
+      );
+
+      expect(
+        body.ancestors.map((entry) => [
+          entry.number,
+          entry.title,
+          entry.synced,
+        ]),
+      ).toEqual([
+        [2, "Child", true],
+        [1, "Epic", true],
+      ]);
+      expect(body.ancestors[0]).toMatchObject({
+        owner: "acme",
+        repo: "web",
+        state: "OPEN",
+      });
+    });
+
+    it("ends at a parent that is not synced and lists it as not synced", async () => {
+      const alice = addUser(database.db, "octocat");
+      const web = addRepo("acme", "web", [alice.id]);
+      addIssue(web, { number: 2, parentId: refTo("web", 9) });
+
+      const body = await summaryBody(
+        signIn(database.db, alice.id).cookie,
+        "/acme/web/2",
+      );
+
+      expect(body.ancestors).toEqual([
+        {
+          owner: "acme",
+          repo: "web",
+          number: 9,
+          title: "Ref 9",
+          state: "OPEN",
+          url: "https://github.com/acme/web/issues/9",
+          synced: false,
+        },
+      ]);
+    });
+
+    it("answers an empty chain for an issue without a parent", async () => {
+      const alice = addUser(database.db, "octocat");
+      addIssue(addRepo("acme", "web", [alice.id]), { number: 1 });
+
+      const body = await summaryBody(
+        signIn(database.db, alice.id).cookie,
+        "/acme/web/1",
+      );
+
+      expect(body.ancestors).toEqual([]);
+    });
+
+    it("ends the chain before an issue it has already visited", async () => {
+      const alice = addUser(database.db, "octocat");
+      const web = addRepo("acme", "web", [alice.id]);
+      addIssue(web, { number: 1, parentId: refTo("web", 3) });
+      addIssue(web, { number: 2, parentId: refTo("web", 1) });
+      addIssue(web, { number: 3, parentId: refTo("web", 2) });
+
+      const body = await summaryBody(
+        signIn(database.db, alice.id).cookie,
+        "/acme/web/1",
+      );
+
+      expect(body.ancestors.map((entry) => entry.number)).toEqual([3, 2]);
+    });
+
+    it("ends before an ancestor in a repo the user cannot read and never names it", async () => {
+      const alice = addUser(database.db, "octocat");
+      const bob = addUser(database.db, "bobby");
+      const web = addRepo("acme", "web", [alice.id, bob.id]);
+      const secret = addRepo("acme", "secret", [alice.id]);
+      addIssue(web, { number: 1, title: "Top" });
+      addIssue(secret, {
+        number: 5,
+        title: "Hidden middle",
+        parentId: refTo("web", 1),
+      });
+      addIssue(web, { number: 2, parentId: refTo("secret", 5) });
+
+      const forAlice = await summaryBody(
+        signIn(database.db, alice.id).cookie,
+        "/acme/web/2",
+      );
+      expect(forAlice.ancestors.map((entry) => entry.number)).toEqual([5, 1]);
+
+      const forBob = await summary(
+        signIn(database.db, bob.id).cookie,
+        "/acme/web/2",
+      );
+      const text = await forBob.text();
+      expect(issueSummarySchema.parse(JSON.parse(text)).ancestors).toEqual([]);
+      expect(text).not.toContain("secret");
+      expect(text).not.toContain("Hidden middle");
+    });
   });
 
   it("answers 404 for an issue that is not synced or not in the user's access", async () => {
