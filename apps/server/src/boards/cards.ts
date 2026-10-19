@@ -6,8 +6,12 @@ import {
   type Board,
   type IssueItem,
 } from "../api/schemas.js";
-import { sortIssues, type AccessibleIssue } from "../issues/index.js";
-import { nestCards, type CardOf } from "./nesting.js";
+import {
+  nestCards,
+  sortIssues,
+  type AccessibleIssue,
+  type CardOf,
+} from "../issues/index.js";
 import { OTHER, placeIssues, type Slot } from "./placement.js";
 
 /** What an empty filter means (SPEC FR-11). */

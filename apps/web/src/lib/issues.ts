@@ -34,9 +34,11 @@ export const SORT_ITEMS = (Object.keys(SORT_LABELS) as Sort[]).map((value) => ({
 export interface IndexSearch {
   q?: string;
   sort?: Sort;
+  /** `?nest=1` nests sub-issues under their parents (SPEC FR-12); absent means flat. */
+  nest?: 1;
 }
 
-/** The filter and sort of the list as the URL carries them (SPEC FR-19). */
+/** The filter, sort and nesting mode of the list as the URL carries them (SPEC FR-19, FR-12). */
 export function parseIndexSearch(search: Record<string, unknown>): IndexSearch {
   // The router parses a value that reads as JSON, so `?q=123` arrives as 123.
   const raw = search.q;
@@ -47,9 +49,16 @@ export function parseIndexSearch(search: Record<string, unknown>): IndexSearch {
       ? String(raw)
       : "";
   const sort = SORT_ITEMS.find((item) => item.value === search.sort)?.value;
+  // `?nest=1` arrives as the number 1 and `?nest=true` as the boolean.
+  const nest =
+    search.nest === 1 ||
+    search.nest === "1" ||
+    search.nest === true ||
+    search.nest === "true";
   return {
     ...(q === "" ? {} : { q }),
     ...(sort === undefined || sort === DEFAULT_SORT ? {} : { sort }),
+    ...(nest ? { nest: 1 as const } : {}),
   };
 }
 
@@ -73,9 +82,9 @@ async function failure(response: Response): Promise<Error> {
   return new Error(`The server answered ${response.status}.`);
 }
 
-export const issuesQuery = (q: string, sort: Sort) =>
+export const issuesQuery = (q: string, sort: Sort, nest = false) =>
   infiniteQueryOptions({
-    queryKey: ["issues", { q, sort }],
+    queryKey: ["issues", { q, sort, nest }],
     initialPageParam: 0,
     queryFn: async ({ pageParam, signal }): Promise<IssueList> => {
       const response = await issuesRoute(
@@ -85,6 +94,7 @@ export const issuesQuery = (q: string, sort: Sort) =>
             sort,
             offset: String(pageParam),
             limit: String(PAGE_SIZE),
+            ...(nest ? { nest: "true" as const } : {}),
           },
         },
         { init: { signal } },
@@ -121,4 +131,54 @@ export function loadedIssues(
       seen.add(item.id);
       return true;
     });
+}
+
+/** One line of the list: an issue at its depth under the issue it is nested in. */
+export interface IssueRow {
+  issue: IssueItem;
+  depth: number;
+  /** The listed issue this one is nested under; `null` for a top-level row. */
+  under: IssueItem | null;
+  expandable: boolean;
+  expanded: boolean;
+}
+
+/**
+ * The rows the nested list shows (SPEC FR-12): every top-level issue, and
+ * below an expanded issue its children in order, at any depth. An issue that
+ * appears twice because pages are fetched by offset is kept at its first
+ * place, so every row has a unique key.
+ */
+export function visibleRows(
+  items: readonly IssueItem[],
+  isExpanded: (id: string) => boolean,
+): IssueRow[] {
+  const rows: IssueRow[] = [];
+  const seen = new Set<string>();
+  const walk = (
+    list: readonly IssueItem[],
+    depth: number,
+    under: IssueItem | null,
+  ) => {
+    for (const issue of list) {
+      if (seen.has(issue.id)) {
+        continue;
+      }
+      seen.add(issue.id);
+      const children = issue.children ?? [];
+      const expanded = children.length > 0 && isExpanded(issue.id);
+      rows.push({
+        issue,
+        depth,
+        under,
+        expandable: children.length > 0,
+        expanded,
+      });
+      if (expanded) {
+        walk(children, depth + 1, issue);
+      }
+    }
+  };
+  walk(items, 0, null);
+  return rows;
 }

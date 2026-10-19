@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/app";
+import { details, summary } from "@/components/detail/test-data";
 import type { IssueItem } from "@/lib/issues";
 import { createQueryClient } from "@/lib/query-client";
 import { createAppRouter } from "@/router";
@@ -17,6 +18,7 @@ const INSTALL_URL = "https://github.com/apps/crossboard/installations/new";
 const VIEWPORT_HEIGHT = 600;
 
 beforeEach(() => {
+  window.sessionStorage.clear();
   // jsdom has no layout; the virtualizer reads the scroll container's size.
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(
     VIEWPORT_HEIGHT,
@@ -81,6 +83,17 @@ function stubServer({ issues, installations = [installation(true)] }: Stub) {
     }
     if (url.pathname === "/api/issues" && issues !== undefined) {
       return issues(url);
+    }
+    const detail = /^\/api\/issues\/acme\/widgets\/(\d+)(\/details)?$/.exec(
+      url.pathname,
+    );
+    if (detail !== null) {
+      const n = Number(detail[1]);
+      return Response.json(
+        detail[2] === undefined
+          ? summary({ number: n, title: `Detail of ${String(n)}` })
+          : details({ bodyHtml: `<p>Body of issue ${String(n)}</p>` }),
+      );
     }
     return new Response(null, { status: 404 });
   });
@@ -369,5 +382,275 @@ describe("the issue list on /", () => {
     await chooseSort("Recently updated");
 
     await waitFor(() => expect(history.location.search).toBe(""));
+  });
+});
+
+describe("nesting sub-issues", () => {
+  const withChildren = (n: number, children: IssueItem[]) =>
+    issue(n, {
+      subIssues: { total: children.length, completed: 0 },
+      children,
+    });
+
+  const at = (n: number) => ({ owner: "acme", repo: "widgets", number: n });
+
+  const tree = () =>
+    withChildren(1, [
+      issue(2, { parent: at(1) }),
+      {
+        ...withChildren(3, [issue(4, { parent: at(3) })]),
+        parent: at(1),
+      },
+    ]);
+
+  const nested = (items: IssueItem[], total = items.length, matched = 4) =>
+    Response.json({ items, total, matched, warnings: [] });
+
+  const rowTitles = () =>
+    [...dataRows()].map(
+      (row) => row.querySelector("td:nth-child(3)")?.textContent,
+    );
+
+  it("asks for the flat list unless ?nest=1 is set", async () => {
+    const mock = stubServer({ issues: () => page([issue(1)]) });
+    renderList();
+    await screen.findByText("Issue number 1");
+
+    expect(issueRequests(mock)[0]?.searchParams.has("nest")).toBe(false);
+    expect(screen.getByText("1 issue")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /sub-issues of/ })).toBeNull();
+  });
+
+  it("lists one top-level row, and expanding it shows the child and then the grandchild", async () => {
+    const mock = stubServer({ issues: () => nested([tree(), issue(9)], 2) });
+    renderList("/?nest=1");
+
+    await screen.findByText("Issue number 1");
+    expect(issueRequests(mock)[0]?.searchParams.get("nest")).toBe("true");
+    expect(screen.getByText("2 top-level issues · 4 matched")).toBeTruthy();
+    expect(dataRows()).toHaveLength(2);
+    expect(screen.queryByText("Issue number 2")).toBeNull();
+
+    const toggle = screen.getByRole("button", {
+      name: "Expand sub-issues of acme/widgets#1",
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    await screen.findByText("Issue number 2");
+    expect(
+      screen
+        .getByRole("button", { name: "Collapse sub-issues of acme/widgets#1" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(screen.queryByText("Issue number 4")).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Expand sub-issues of acme/widgets#3",
+      }),
+    );
+    expect(await screen.findByText("Issue number 4")).toBeTruthy();
+    expect(rowTitles()).toEqual([
+      "Issue number 1",
+      "Issue number 2",
+      "Issue number 3",
+      "Issue number 4",
+      "Issue number 9",
+    ]);
+    const indent = (title: string) =>
+      (screen.getByText(title).closest("td") as HTMLElement).style.paddingLeft;
+    expect(indent("Issue number 1")).toBe("");
+    expect(indent("Issue number 2")).toBe("1.25rem");
+    expect(indent("Issue number 4")).toBe("2.5rem");
+  });
+
+  it("keeps the expanded rows for the session", async () => {
+    stubServer({ issues: () => nested([tree()], 1) });
+    renderList("/?nest=1");
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Expand sub-issues of acme/widgets#1",
+      }),
+    );
+    await screen.findByText("Issue number 2");
+    cleanup();
+
+    renderList("/?nest=1");
+    expect(await screen.findByText("Issue number 2")).toBeTruthy();
+  });
+
+  it("turns nesting on and off from the toolbar and carries it in the URL", async () => {
+    const mock = stubServer({
+      issues: (url) =>
+        url.searchParams.has("nest") ? nested([tree()], 1) : page([issue(1)]),
+    });
+    const { history } = renderList("/?q=bug&sort=title-asc");
+    await screen.findByText("Issue number 1");
+
+    const nestSwitch = screen.getByRole("switch", { name: "Nest sub-issues" });
+    expect(nestSwitch.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(nestSwitch);
+    await waitFor(() => expect(history.location.search).toContain("nest=1"));
+    expect(history.location.search).toContain("title-asc");
+    expect(history.location.search).toContain("bug");
+    await screen.findByText("1 top-level issue · 4 matched");
+    expect(issueRequests(mock).at(-1)?.searchParams.get("nest")).toBe("true");
+    expect(issueRequests(mock).at(-1)?.searchParams.get("q")).toBe("bug");
+
+    fireEvent.click(screen.getByRole("switch", { name: "Nest sub-issues" }));
+    await waitFor(() => expect(history.location.search).not.toContain("nest"));
+    await screen.findByText("1 issue");
+  });
+
+  it("keeps nesting when a qualifier is added from a row", async () => {
+    stubServer({ issues: () => nested([tree()], 1) });
+    const { history } = renderList("/?nest=1");
+    const row = (await screen.findByText("Issue number 1")).closest(
+      "tr",
+    ) as HTMLElement;
+
+    fireEvent.click(within(row).getByText("acme/widgets"));
+
+    await waitFor(() => expect(history.location.search).toContain("repo"));
+    expect(history.location.search).toContain("nest=1");
+  });
+
+  it("moves over the visible rows with j and k and opens the selected one with Enter", async () => {
+    stubServer({ issues: () => nested([tree(), issue(9)], 2) });
+    renderList("/?nest=1");
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Expand sub-issues of acme/widgets#1",
+      }),
+    );
+    await screen.findByText("Issue number 2");
+    const selected = () =>
+      document
+        .querySelector("tr[aria-current='true']")
+        ?.getAttribute("data-issue-id");
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(selected()).toBe("issue-1");
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(selected()).toBe("issue-2");
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(selected()).toBe("issue-3");
+    fireEvent.keyDown(document.body, { key: "k" });
+    expect(selected()).toBe("issue-2");
+
+    fireEvent.keyDown(document.body, { key: "Enter" });
+    expect(
+      await within(
+        await waitFor(() => {
+          const panel = document.querySelector<HTMLElement>(
+            "[data-detail-panel]",
+          );
+          if (panel === null) throw new Error("no panel");
+          return panel;
+        }),
+      ).findByRole("heading", { name: "Detail of 2" }),
+    ).toBeTruthy();
+  });
+
+  it("shows loading, empty and error states in nesting mode", async () => {
+    stubServer({ issues: () => new Promise<Response>(() => {}) });
+    renderList("/?nest=1");
+    expect(
+      await screen.findByRole("status", { name: "Loading issues" }),
+    ).toBeTruthy();
+    cleanup();
+
+    stubServer({ issues: () => nested([], 0, 0) });
+    renderList("/?nest=1");
+    expect(
+      await screen.findByText("No open issues match this filter"),
+    ).toBeTruthy();
+    cleanup();
+
+    stubServer({ issues: () => new Response(null, { status: 500 }) });
+    renderList("/?nest=1");
+    expect(await screen.findByText("Could not load issues")).toBeTruthy();
+  });
+});
+
+describe("the parent of an issue", () => {
+  const parentOf = (n: number) => ({
+    owner: "acme",
+    repo: "widgets",
+    number: n,
+  });
+
+  it("is named below the title of a flat row, and opens its detail", async () => {
+    stubServer({
+      issues: () => page([issue(2, { parent: parentOf(5) }), issue(3)]),
+    });
+    renderList();
+
+    const row = (await screen.findByText("Issue number 2")).closest(
+      "tr",
+    ) as HTMLElement;
+    const hint = within(row).getByRole("button", { name: /acme\/widgets#5/ });
+    expect(hint.textContent).toContain("↳");
+    const other = screen
+      .getByText("Issue number 3")
+      .closest("tr") as HTMLElement;
+    expect(within(other).queryByText(/↳/)).toBeNull();
+
+    fireEvent.click(hint);
+    expect(
+      await screen.findByRole("heading", { name: "Detail of 5" }),
+    ).toBeTruthy();
+  });
+
+  it("is left off a row nested right under it, but not off one whose parent is not listed", async () => {
+    const child = issue(2, { parent: parentOf(1) });
+    const stray = issue(3, { parent: parentOf(77) });
+    stubServer({
+      issues: () =>
+        Response.json({
+          items: [
+            issue(1, {
+              subIssues: { total: 1, completed: 0 },
+              children: [child],
+            }),
+            { ...stray, children: [] },
+          ],
+          total: 2,
+          matched: 3,
+          warnings: [],
+        }),
+    });
+    renderList("/?nest=1");
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Expand sub-issues of acme/widgets#1",
+      }),
+    );
+
+    const rowOf = (title: string) =>
+      screen.getByText(title).closest("tr") as HTMLElement;
+    await screen.findByText("Issue number 2");
+    expect(within(rowOf("Issue number 2")).queryByText(/↳/)).toBeNull();
+    expect(
+      within(rowOf("Issue number 3")).getByText(/acme\/widgets#77/),
+    ).toBeTruthy();
+  });
+});
+
+describe("the nesting mode in the URL", () => {
+  it("survives a filter submitted from the filter bar", async () => {
+    stubServer({ issues: () => page([issue(1)]) });
+    const { history } = renderList("/?nest=1");
+    await screen.findByText("Issue number 1");
+
+    const input = screen.getByRole("combobox", { name: /filter/i });
+    fireEvent.input(input, {
+      target: { value: "label:bug" },
+      inputType: "insertText",
+    });
+    fireEvent.submit(input.closest("form") as HTMLFormElement);
+
+    await waitFor(() => expect(history.location.search).toContain("bug"));
+    expect(history.location.search).toContain("nest=1");
   });
 });

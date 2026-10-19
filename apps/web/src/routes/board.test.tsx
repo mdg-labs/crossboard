@@ -353,6 +353,54 @@ describe("nested sub-issues", () => {
   });
 });
 
+describe("the parent of a card", () => {
+  const parentOf = { owner: "acme", repo: "widgets", number: 5 };
+
+  it("is named below the title of an expanded-mode card, and opens its detail", async () => {
+    stubServer({
+      board: Response.json(board({ subIssueMode: "expanded" })),
+      cards: () =>
+        Response.json(
+          cardsOf([card(1, { title: "Child", parent: parentOf }), card(2)], []),
+        ),
+    });
+    renderAt("/b/7");
+
+    const child = (await screen.findByText("Child")).closest(
+      "[data-issue-id]",
+    ) as HTMLElement;
+    const hint = within(child).getByRole("button", { name: /acme\/widgets#5/ });
+    expect(hint.textContent).toContain("↳");
+    const other = screen
+      .getByText("Issue number 2")
+      .closest("[data-issue-id]") as HTMLElement;
+    expect(within(other).queryByText(/↳/)).toBeNull();
+
+    fireEvent.click(hint);
+    expect(
+      await screen.findByRole("heading", { name: "Issue number 5" }),
+    ).toBeTruthy();
+  });
+
+  it("is left off a collapsed-mode card, which nests under its parent", async () => {
+    stubServer({
+      cards: () =>
+        Response.json(
+          cardsOf(
+            [card(1, { title: "Child", parent: parentOf, children: [] })],
+            [],
+          ),
+        ),
+    });
+    renderAt("/b/7");
+
+    const child = (await screen.findByText("Child")).closest(
+      "[data-issue-id]",
+    ) as HTMLElement;
+    expect(within(child).queryByText(/↳/)).toBeNull();
+  });
+});
+
 describe("a long column", () => {
   const many = (count: number) =>
     Array.from({ length: count }, (_, index) => card(index + 1));

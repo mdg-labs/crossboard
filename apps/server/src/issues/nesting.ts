@@ -1,5 +1,3 @@
-import type { Slot } from "./placement.js";
-
 /** What nesting needs of an issue: its identity and the parent it names. */
 export interface NestableIssue {
   id: string;
@@ -22,7 +20,7 @@ const issueKey = (owner: string, repo: string, number: number) =>
  */
 function nearestPlacedAncestors<T extends NestableIssue>(
   synced: readonly T[],
-  placed: ReadonlyMap<string, Slot>,
+  placed: ReadonlyMap<string, unknown>,
 ): Map<string, string> {
   const byKey = new Map(
     synced.map((issue) => [
@@ -85,15 +83,18 @@ function breakCycles(
   }
 }
 
-export interface NestOptions<T> {
-  /** Every synced issue of the viewer, in the board's sort order. */
+export interface NestOptions<T, S> {
+  /** Every synced issue of the viewer, in the sort order of the result. */
   synced: readonly T[];
-  /** The slot of each placed issue (`placeIssues`). */
-  placed: ReadonlyMap<string, Slot>;
+  /** The slot of each placed issue: a board's column (`placeIssues`) or the list's single slot. */
+  placed: ReadonlyMap<string, S>;
   /** Wraps an issue into the card it is shown as. */
   toCard: (issue: T) => CardOf<T>;
-  /** The name shown on a nested card for the slot it was placed in. */
-  slotName: (slot: Slot) => string;
+  /**
+   * The name shown on a nested card for the slot it was placed in; a result
+   * without named slots (the list) leaves it out.
+   */
+  slotName?: (slot: S) => string;
   mode: "collapsed" | "expanded";
 }
 
@@ -103,9 +104,9 @@ export interface NestOptions<T> {
  * ancestor's `children` with its own `columnName` instead of as a top-level
  * card (SPEC FR-31); in expanded mode every placed issue is its own card.
  */
-export function nestCards<T extends NestableIssue>(
-  options: NestOptions<T>,
-): Map<Slot, CardOf<T>[]> {
+export function nestCards<T extends NestableIssue, S>(
+  options: NestOptions<T, S>,
+): Map<S, CardOf<T>[]> {
   const { synced, placed, toCard, slotName, mode } = options;
   const ordered = synced.filter((issue) => placed.has(issue.id));
   const ancestorOf =
@@ -123,14 +124,14 @@ export function nestCards<T extends NestableIssue>(
       mode === "collapsed" ? { ...toCard(issue), children: [] } : toCard(issue),
     ]),
   );
-  const slots = new Map<Slot, CardOf<T>[]>();
+  const slots = new Map<S, CardOf<T>[]>();
   for (const issue of ordered) {
     const card = cards.get(issue.id);
     const slot = placed.get(issue.id);
     if (card === undefined || slot === undefined) continue;
     const ancestor = cards.get(ancestorOf.get(issue.id) ?? "");
     if (ancestor?.children !== undefined) {
-      card.columnName = slotName(slot);
+      if (slotName !== undefined) card.columnName = slotName(slot);
       ancestor.children.push(card);
     } else {
       const list = slots.get(slot);

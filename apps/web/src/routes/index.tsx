@@ -19,18 +19,31 @@ export function IndexRoute(): React.ReactElement {
           search: {
             q,
             ...(search.sort === undefined ? {} : { sort: search.sort }),
+            ...(search.nest === undefined ? {} : { nest: search.nest }),
           },
         });
       }}
+      onNestChange={(nest) =>
+        void navigate({
+          to: "/",
+          search: {
+            ...(search.q === undefined ? {} : { q: search.q }),
+            ...(search.sort === undefined ? {} : { sort: search.sort }),
+            nest: nest ? (1 as const) : undefined,
+          },
+        })
+      }
       onSortChange={(sort: Sort) =>
         void navigate({
           to: "/",
           search: {
             ...(search.q === undefined ? {} : { q: search.q }),
             ...(sort === DEFAULT_SORT ? {} : { sort }),
+            ...(search.nest === undefined ? {} : { nest: search.nest }),
           },
         })
       }
+      nest={search.nest === 1}
       q={search.q ?? ""}
       sort={search.sort ?? DEFAULT_SORT}
     />

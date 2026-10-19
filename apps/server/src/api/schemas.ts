@@ -55,6 +55,13 @@ export const issueItemSchema = z.object({
 
 export type IssueItem = z.infer<typeof issueItemSchema>;
 
+/** A list item in nesting mode: the issue item and the sub-issues listed under it (SPEC FR-12). */
+export type IssueNode = IssueItem & { children?: IssueNode[] };
+
+export const issueNodeSchema: z.ZodType<IssueNode> = issueItemSchema.extend({
+  children: z.lazy(() => z.array(issueNodeSchema)).optional(),
+});
+
 export const issueStateSchema = z.enum(["OPEN", "CLOSED"]);
 
 /**
@@ -157,6 +164,10 @@ export const issueListQuerySchema = z.object({
   sort: sortSchema.default(DEFAULT_SORT),
   offset: z.coerce.number().int().min(0).default(0),
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
+  nest: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
 });
 
 export const queryWarningSchema = z.object({
@@ -165,9 +176,16 @@ export const queryWarningSchema = z.object({
   end: z.number().int(),
 });
 
+/**
+ * The list route's response (SPEC §7.4). With `nest=true` the items are the
+ * top-level issues, each with its `children`, `total` counts them and
+ * `matched` counts every issue the filter matched; flat, `matched` is absent
+ * and `total` counts the matched issues.
+ */
 export const issueListSchema = z.object({
-  items: z.array(issueItemSchema),
+  items: z.array(issueNodeSchema),
   total: z.number().int().nonnegative(),
+  matched: z.number().int().nonnegative().optional(),
   warnings: z.array(queryWarningSchema),
 });
 

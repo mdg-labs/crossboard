@@ -20,8 +20,9 @@ export interface CardActions {
 }
 
 /**
- * One card of a board column (SPEC FR-32): repo, number, title, labels,
- * assignees, type, the blocked badge and sub-issue progress. In collapsed mode
+ * One card of a board column (SPEC FR-32): repo, number, title, the parent in
+ * expanded mode, labels, assignees, type, the blocked badge and sub-issue
+ * progress. In collapsed mode
  * a card with nested sub-issues has a toggle that lists them below it; the
  * nested cards can expand in turn (FR-31).
  */
@@ -40,6 +41,7 @@ export function BoardCard({
   };
   const children = card.children ?? [];
   const { total, completed } = card.subIssues;
+  const { parent } = card;
 
   return (
     <Collapsible
@@ -80,6 +82,25 @@ export function BoardCard({
             </Button>
           </div>
           <p className="break-words font-medium text-sm">{card.title}</p>
+          {
+            // Only an expanded-mode card names its parent: the server leaves
+            // `children` off there, while collapsed mode nests sub-issues
+            // under their parent card (SPEC FR-31, FR-32).
+            card.children !== undefined || parent === null ? null : (
+              <Button
+                className="-mx-2 h-4 max-w-full justify-start px-2 font-normal text-muted-foreground text-xs"
+                onClick={() => actions.onOpen(parent)}
+                size="xs"
+                title={`Open the parent ${parent.owner}/${parent.repo}#${String(parent.number)}`}
+                variant="link"
+              >
+                <span aria-hidden="true">↳</span>
+                <span className="truncate">
+                  {parent.owner}/{parent.repo}#{parent.number}
+                </span>
+              </Button>
+            )
+          }
           {card.columnName === undefined &&
           card.type === null &&
           !card.isBlocked &&

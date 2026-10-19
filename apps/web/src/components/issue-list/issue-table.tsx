@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef, useState } from "react";
 import { DetailDrawer } from "@/components/detail/detail-drawer";
 import { isShortcut } from "@/components/filter-bar/keyboard";
+import { useExpandedRows } from "@/components/issue-list/expanded-rows";
 import { IssueRow, ROW_HEIGHT } from "@/components/issue-list/issue-row";
 import {
   Table,
@@ -11,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { IssueRef } from "@/lib/issue-detail";
-import type { IssueItem } from "@/lib/issues";
+import { visibleRows, type IssueItem } from "@/lib/issues";
 
 const refOf = (issue: IssueItem): IssueRef => ({
   owner: issue.repo.owner,
@@ -42,14 +43,21 @@ const COLUMNS = [
   },
 ];
 
+/**
+ * The virtualized list (SPEC FR-11). In nesting mode (`nest`) `items` are the
+ * top-level issues and the rows are flattened from the ones the viewer
+ * expanded (FR-12); `j`/`k`, `Enter` and `o` work over those visible rows.
+ */
 export function IssueTable({
-  items,
+  items: topLevel,
+  nest,
   hasMore,
   loadingMore,
   onLoadMore,
   onFilter,
 }: {
   items: IssueItem[];
+  nest: boolean;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -57,6 +65,9 @@ export function IssueTable({
 }): React.ReactElement {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [panel, setPanel] = useState<IssueRef | null>(null);
+  const { isExpanded, setExpanded } = useExpandedRows();
+  const lines = visibleRows(topLevel, isExpanded);
+  const items = lines.map((line) => line.issue);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -148,14 +159,26 @@ export function IssueTable({
             <tr aria-hidden="true" style={{ height: paddingTop }} />
           ) : null}
           {rows.map((row) => {
-            const issue = items[row.index];
-            return issue === undefined ? null : (
+            const line = lines[row.index];
+            return line === undefined ? null : (
               <IssueRow
-                issue={issue}
-                key={issue.id}
+                issue={line.issue}
+                key={line.issue.id}
+                nesting={
+                  nest
+                    ? {
+                        depth: line.depth,
+                        under: line.under,
+                        expandable: line.expandable,
+                        expanded: line.expanded,
+                        onToggle: (open) => setExpanded(line.issue.id, open),
+                      }
+                    : undefined
+                }
                 onFilter={onFilter}
                 onOpen={openIssue}
-                selected={issue.id === selectedId}
+                onOpenRef={setPanel}
+                selected={line.issue.id === selectedId}
               />
             );
           })}

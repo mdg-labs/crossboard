@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   issueListSchema,
@@ -486,6 +487,248 @@ describe("GET /api/issues", () => {
         ),
       ),
     ).toEqual([1]);
+  });
+});
+
+describe("GET /api/issues?nest=true", () => {
+  /** A ref row naming a synced issue, so another issue can have it as parent. */
+  function parentRef(repo: string, number: number): string {
+    const id = `REF_${repo}_${String(number)}`;
+    const exists = database.db
+      .select({ id: schema.issueRefs.id })
+      .from(schema.issueRefs)
+      .where(eq(schema.issueRefs.id, id))
+      .get();
+    if (exists === undefined) addRef(id, repo, number, "OPEN");
+    return id;
+  }
+
+  function seedTree(userId: number) {
+    const repo = addRepo("acme", "web", [userId]);
+    addIssue(repo, { number: 1, updatedAt: 1006 });
+    addIssue(repo, {
+      number: 2,
+      updatedAt: 1005,
+      parentId: parentRef("acme/web", 1),
+    });
+    addIssue(repo, {
+      number: 3,
+      updatedAt: 1004,
+      parentId: parentRef("acme/web", 2),
+    });
+    addIssue(repo, { number: 4, updatedAt: 1003 });
+    return repo;
+  }
+
+  it("lists an epic, its child and its grandchild as one top-level row with nested children", async () => {
+    const alice = addUser(database.db, "octocat");
+    seedTree(alice.id);
+    const { cookie } = signIn(database.db, alice.id);
+
+    const body = await listBody(cookie, "?nest=true");
+
+    expect(numbers(body)).toEqual([1, 4]);
+    expect(body.total).toBe(2);
+    expect(body.matched).toBe(4);
+    const [epic] = body.items;
+    expect(epic?.children?.map((child) => child.number)).toEqual([2]);
+    expect(epic?.children?.[0]?.children?.map((child) => child.number)).toEqual(
+      [3],
+    );
+    expect(epic?.children?.[0]?.children?.[0]?.children).toEqual([]);
+    expect(body.items[1]?.children).toEqual([]);
+  });
+
+  it("stays flat, without matched, when nest is absent or false", async () => {
+    const alice = addUser(database.db, "octocat");
+    seedTree(alice.id);
+    const { cookie } = signIn(database.db, alice.id);
+
+    for (const query of ["", "?nest=false"]) {
+      const body = await listBody(cookie, query);
+      expect(numbers(body)).toEqual([1, 2, 3, 4]);
+      expect(body.total).toBe(4);
+      expect(body).not.toHaveProperty("matched");
+      expect(body.items.every((item) => !("children" in item))).toBe(true);
+    }
+  });
+
+  it("rejects a nest value other than true or false", async () => {
+    const alice = addUser(database.db, "octocat");
+    const { cookie } = signIn(database.db, alice.id);
+    expect((await list(cookie, "?nest=1")).status).toBe(400);
+  });
+
+  it("keeps an issue top-level when no ancestor of it matches the filter", async () => {
+    const alice = addUser(database.db, "octocat");
+    const repo = addRepo("acme", "web", [alice.id]);
+    addIssue(repo, { number: 1, title: "epic" });
+    addIssue(repo, {
+      number: 2,
+      title: "bug child",
+      parentId: parentRef("acme/web", 1),
+    });
+    addIssue(repo, {
+      number: 3,
+      title: "bug grandchild",
+      parentId: parentRef("acme/web", 2),
+    });
+    const { cookie } = signIn(database.db, alice.id);
+
+    const body = await listBody(cookie, "?nest=true&q=bug");
+
+    expect(numbers(body)).toEqual([2]);
+    expect(body.items[0]?.children?.map((child) => child.number)).toEqual([3]);
+    expect(body.matched).toBe(2);
+    const onlyGrandchild = await listBody(cookie, "?nest=true&q=grandchild");
+    expect(numbers(onlyGrandchild)).toEqual([3]);
+    expect(onlyGrandchild.total).toBe(1);
+  });
+
+  it("nests a grandchild under the epic when its parent does not match", async () => {
+    const alice = addUser(database.db, "octocat");
+    const repo = addRepo("acme", "web", [alice.id]);
+    addIssue(repo, { number: 1, title: "epic" });
+    addIssue(repo, {
+      number: 2,
+      title: "middle",
+      parentId: parentRef("acme/web", 1),
+    });
+    addIssue(repo, {
+      number: 3,
+      title: "leaf epic",
+      parentId: parentRef("acme/web", 2),
+    });
+    const { cookie } = signIn(database.db, alice.id);
+
+    const body = await listBody(cookie, "?nest=true&q=epic");
+
+    expect(numbers(body)).toEqual([1]);
+    expect(body.items[0]?.children?.map((child) => child.number)).toEqual([3]);
+  });
+
+  it("breaks a parent cycle so that every matched issue is listed once", async () => {
+    const alice = addUser(database.db, "octocat");
+    const repo = addRepo("acme", "web", [alice.id]);
+    addIssue(repo, {
+      number: 1,
+      updatedAt: 1002,
+      parentId: parentRef("acme/web", 2),
+    });
+    addIssue(repo, {
+      number: 2,
+      updatedAt: 1001,
+      parentId: parentRef("acme/web", 1),
+    });
+    const { cookie } = signIn(database.db, alice.id);
+
+    const body = await listBody(cookie, "?nest=true");
+
+    expect(numbers(body)).toEqual([1]);
+    expect(body.items[0]?.children?.map((child) => child.number)).toEqual([2]);
+    expect(body.matched).toBe(2);
+  });
+
+  it("pages top-level rows so that every matched issue appears exactly once across pages", async () => {
+    const alice = addUser(database.db, "octocat");
+    const repo = addRepo("acme", "web", [alice.id]);
+    const tops = 250;
+    for (let number = 1; number <= tops; number++) {
+      addIssue(repo, { number, updatedAt: 10_000 - number });
+    }
+    for (let number = 1; number <= tops; number += 5) {
+      addIssue(repo, {
+        number: tops + number,
+        updatedAt: 1,
+        parentId: parentRef("acme/web", number),
+      });
+    }
+    const { cookie } = signIn(database.db, alice.id);
+
+    const seen: number[] = [];
+    const collect = (items: IssueList["items"]) => {
+      for (const item of items) {
+        seen.push(item.number);
+        collect(item.children ?? []);
+      }
+    };
+    let total = 0;
+    let matched = 0;
+    for (let offset = 0; offset < tops; offset += 100) {
+      const page = await listBody(
+        cookie,
+        `?nest=true&offset=${String(offset)}`,
+      );
+      expect(page.items.length).toBe(Math.min(100, tops - offset));
+      total = page.total;
+      matched = page.matched ?? 0;
+      collect(page.items);
+    }
+
+    expect(total).toBe(tops);
+    expect(matched).toBe(tops + tops / 5);
+    expect(seen.length).toBe(matched);
+    expect(new Set(seen).size).toBe(matched);
+  });
+
+  it("orders children by the requested sort", async () => {
+    const alice = addUser(database.db, "octocat");
+    const repo = addRepo("acme", "web", [alice.id]);
+    addIssue(repo, { number: 1 });
+    addIssue(repo, {
+      number: 2,
+      updatedAt: 1001,
+      parentId: parentRef("acme/web", 1),
+    });
+    addIssue(repo, {
+      number: 3,
+      updatedAt: 1002,
+      parentId: parentRef("acme/web", 1),
+    });
+    const { cookie } = signIn(database.db, alice.id);
+
+    const newest = await listBody(cookie, "?nest=true");
+    const oldest = await listBody(cookie, "?nest=true&sort=updated-asc");
+
+    expect(newest.items[0]?.children?.map((child) => child.number)).toEqual([
+      3, 2,
+    ]);
+    expect(oldest.items[0]?.children?.map((child) => child.number)).toEqual([
+      2, 3,
+    ]);
+  });
+
+  it("never lists as a child an issue from a repo the session user cannot access, even under a parent they can", async () => {
+    const alice = addUser(database.db, "octocat");
+    const bob = addUser(database.db, "bob");
+    const shared = addRepo("acme", "shared", [alice.id, bob.id]);
+    const secret = addRepo("acme", "secret", [alice.id]);
+    addIssue(shared, { number: 1, title: "shared epic" });
+    addIssue(secret, {
+      number: 2,
+      title: "secret child",
+      parentId: parentRef("acme/shared", 1),
+    });
+    addIssue(shared, {
+      number: 3,
+      title: "shared grandchild",
+      parentId: parentRef("acme/secret", 2),
+    });
+    const asAlice = signIn(database.db, alice.id).cookie;
+    const asBob = signIn(database.db, bob.id).cookie;
+
+    const forAlice = await listBody(asAlice, "?nest=true");
+    const forBob = await listBody(asBob, "?nest=true");
+
+    expect(numbers(forAlice)).toEqual([1]);
+    expect(forAlice.items[0]?.children?.[0]?.number).toBe(2);
+    expect(numbers(forBob).sort()).toEqual([1, 3]);
+    expect(forBob.items.every((item) => item.children?.length === 0)).toBe(
+      true,
+    );
+    expect(forBob.matched).toBe(2);
+    const raw = await (await list(asBob, "?nest=true")).text();
+    expect(raw).not.toContain("secret");
   });
 });
 

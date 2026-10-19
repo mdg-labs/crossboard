@@ -1,4 +1,4 @@
-import { ExternalLinkIcon } from "lucide-react";
+import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
 import {
   assigneeQualifier,
   labelQualifier,
@@ -9,8 +9,10 @@ import { RelativeTime } from "@/components/issue-list/relative-time";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
 import { TableCell, TableRow } from "@/components/ui/table";
+import type { IssueRef } from "@/lib/issue-detail";
 import type { IssueItem } from "@/lib/issues";
 
 /** Every row is exactly this tall: the virtualizer does not measure rows. */
@@ -19,20 +21,51 @@ export const ROW_HEIGHT = 44;
 const relationCount = (relations: IssueItem["blockedBy"]): number =>
   relations.open + relations.notAccessible;
 
+/** Indent of each nesting level, in rem. */
+const INDENT_REM = 1.25;
+
+export interface RowNesting {
+  depth: number;
+  /** The listed issue this row is nested under. */
+  under: IssueItem | null;
+  expandable: boolean;
+  expanded: boolean;
+  onToggle: (expanded: boolean) => void;
+}
+
+const sameRef = (parent: NonNullable<IssueItem["parent"]>, issue: IssueItem) =>
+  parent.owner.toLowerCase() === issue.repo.owner.toLowerCase() &&
+  parent.repo.toLowerCase() === issue.repo.name.toLowerCase() &&
+  parent.number === issue.number;
+
+/**
+ * One row of the list (SPEC FR-12). `nesting` is given in nesting mode: the
+ * row is indented by its depth and an issue with sub-issues has a toggle. A
+ * row shows its parent below the title unless it is nested right under it.
+ */
 export function IssueRow({
   issue,
   selected,
+  nesting,
   onFilter,
   onOpen,
+  onOpenRef,
 }: {
   issue: IssueItem;
   selected: boolean;
+  nesting?: RowNesting;
   /** Opens the issue's detail (SPEC FR-39). */
   onOpen: (issue: IssueItem) => void;
+  /** Opens the detail of an issue named only by its place on GitHub. */
+  onOpenRef: (ref: IssueRef) => void;
   /** Adds a qualifier to the filter (SPEC FR-15). */
   onFilter: (qualifier: string) => void;
 }): React.ReactElement {
   const repo = `${issue.repo.owner}/${issue.repo.name}`;
+  const { parent } = issue;
+  const showParent =
+    parent !== null &&
+    !(nesting?.under != null && sameRef(parent, nesting.under));
   const blockedBy = relationCount(issue.blockedBy);
   const blocking = relationCount(issue.blocking);
 
@@ -65,8 +98,58 @@ export function IssueRow({
       <TableCell className="text-muted-foreground tabular-nums">
         #{issue.number}
       </TableCell>
-      <TableCell className="truncate font-medium" title={issue.title}>
-        {issue.title}
+      <TableCell
+        style={
+          nesting === undefined || nesting.depth === 0
+            ? undefined
+            : { paddingLeft: `${String(nesting.depth * INDENT_REM)}rem` }
+        }
+      >
+        <div className="flex items-center gap-1">
+          {nesting === undefined ? null : nesting.expandable ? (
+            <Collapsible
+              onOpenChange={nesting.onToggle}
+              open={nesting.expanded}
+            >
+              <CollapsibleTrigger
+                aria-label={`${nesting.expanded ? "Collapse" : "Expand"} sub-issues of ${repo}#${String(issue.number)}`}
+                className="group -ml-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronRightIcon
+                  aria-hidden="true"
+                  className="size-4 transition-transform group-data-panel-open:rotate-90"
+                />
+              </CollapsibleTrigger>
+            </Collapsible>
+          ) : (
+            <span aria-hidden="true" className="-ml-1 size-5 shrink-0" />
+          )}
+          <div className="flex min-w-0 flex-col leading-tight">
+            <span className="truncate font-medium" title={issue.title}>
+              {issue.title}
+            </span>
+            {showParent ? (
+              <Button
+                className="-mx-2 h-4 max-w-full justify-start px-2 font-normal text-muted-foreground text-xs"
+                onClick={() =>
+                  onOpenRef({
+                    owner: parent.owner,
+                    repo: parent.repo,
+                    number: parent.number,
+                  })
+                }
+                size="xs"
+                title={`Open the parent ${parent.owner}/${parent.repo}#${String(parent.number)}`}
+                variant="link"
+              >
+                <span aria-hidden="true">↳</span>
+                <span className="truncate">
+                  {parent.owner}/{parent.repo}#{parent.number}
+                </span>
+              </Button>
+            ) : null}
+          </div>
+        </div>
       </TableCell>
       <TableCell>
         {issue.type === null ? null : (
