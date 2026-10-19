@@ -9,6 +9,8 @@ import type { Jobs } from "../jobs/index.js";
 const { installations, repos } = schema;
 
 export const DISCOVERY_JOB = "sync.discover";
+export const DISCOVERY_SCHEDULE_JOB = "sync.discover-all";
+export const DISCOVERY_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const PAGE_SIZE = 100;
 /** How many repositories one state query covers (SPEC §5.3). */
@@ -366,12 +368,52 @@ export function enqueueDiscovery(jobs: Jobs, installationId: number): boolean {
   );
 }
 
-/** Registers the job that runs {@link Discovery.discover} for one installation. */
-export function registerDiscoveryJob(jobs: Jobs, discovery: Discovery): void {
+/**
+ * Registers the job that runs {@link Discovery.discover} for one installation.
+ * A run that fails is logged at `warn` with the installation id and not
+ * thrown: the scheduled discovery of {@link registerDiscoverySchedule} runs it
+ * again.
+ */
+export function registerDiscoveryJob(
+  jobs: Jobs,
+  discovery: Discovery,
+  logger: Logger,
+): void {
   jobs.register<{ installationId: number }>(
     DISCOVERY_JOB,
     async ({ installationId }) => {
-      await discovery.discover(installationId);
+      try {
+        await discovery.discover(installationId);
+      } catch (error) {
+        logger.warn(
+          { err: error, installationId },
+          "repository discovery failed; it runs again at the next scheduled discovery",
+        );
+      }
     },
   );
+}
+
+/**
+ * Registers the job that enqueues discovery for every active, non-suspended
+ * installation, and schedules it every `intervalMs` (SPEC §6.1), so an
+ * installation whose discovery failed, or that a restart or an access
+ * computation did not reach, is discovered again within a day.
+ */
+export function registerDiscoverySchedule(
+  jobs: Jobs,
+  db: Pick<Db, "select">,
+  isActive: (installationId: number) => boolean,
+  intervalMs: number = DISCOVERY_INTERVAL_MS,
+): void {
+  jobs.register(DISCOVERY_SCHEDULE_JOB, () => {
+    for (const { id } of db
+      .select({ id: installations.id })
+      .from(installations)
+      .where(eq(installations.suspended, false))
+      .all()) {
+      if (isActive(id)) enqueueDiscovery(jobs, id);
+    }
+  });
+  jobs.schedule(DISCOVERY_SCHEDULE_JOB, intervalMs);
 }

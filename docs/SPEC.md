@@ -221,6 +221,7 @@ Budget reference (installation tokens): 5,000 REST requests/hour and 5,000 Graph
 
 ### 6.1 Initial sync
 - Triggered when a repo becomes part of an active installation and has `sync_state = pending`: on installation, on repositories added, when an installation becomes active, and at startup for any pending repo.
+- Repository discovery (§5.3) runs for every active, non-suspended installation at startup, when an installation becomes active, and once every 24 h through the jobs interface, so a discovery that failed (logged at `warn` with the installation id) is retried by the next scheduled run at the latest.
 - One GraphQL query per page of 100 open issues. The selection in §5.3 costs about 4 points per page (one request per nested connection per 100 issues); the client logs the actual `rateLimit { cost }` of each query.
 - Concurrency: at most 2 in-flight GitHub requests per installation and 4 overall. On `403`/`429` with `retry-after` or `x-ratelimit-reset`, the client waits as told; other failures retry 3 times with exponential backoff (1 s, 4 s, 16 s), then mark the repo `error` with the message.
 - A repo's issues are replaced atomically when its sync completes (open issues no longer returned are deleted).

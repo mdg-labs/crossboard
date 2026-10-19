@@ -28,6 +28,7 @@ import {
   createDiscovery,
   enqueueDiscovery,
   registerDiscoveryJob,
+  registerDiscoverySchedule,
 } from "./sync/discovery.js";
 import { createRefetch } from "./sync/refetch.js";
 import { registerResyncJob } from "./sync/resync.js";
@@ -145,7 +146,8 @@ export const discovery = createDiscovery({
     for (const repo of pending) enqueueSync(jobs, repo);
   },
 });
-registerDiscoveryJob(jobs, discovery);
+registerDiscoveryJob(jobs, discovery, logger);
+registerDiscoverySchedule(jobs, database.db, isActive);
 
 export const access = createAccess({
   db: database.db,

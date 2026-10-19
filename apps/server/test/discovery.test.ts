@@ -25,6 +25,9 @@ import {
   REPOSITORY_STATES_BATCH,
   enqueueDiscovery,
   registerDiscoveryJob,
+  registerDiscoverySchedule,
+  DISCOVERY_INTERVAL_MS,
+  DISCOVERY_SCHEDULE_JOB,
 } from "../src/sync/discovery.js";
 import { assertReadOnlyDocument } from "../src/github/index.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
@@ -621,12 +624,96 @@ describe("the discovery job", () => {
     listing[1] = [{ id: 1, owner: "acme", name: "r", openIssues: 1 }];
     const { discovery, logger } = build();
     const jobs = createJobs({ logger });
-    registerDiscoveryJob(jobs, discovery);
+    registerDiscoveryJob(jobs, discovery, logger);
     expect(enqueueDiscovery(jobs, 1)).toBe(true);
     expect(enqueueDiscovery(jobs, 1)).toBe(false);
     jobs.start();
     await jobs.stop();
     expect(repoRow(1)).toMatchObject({ syncState: "pending" });
     expect(DISCOVERY_JOB).toBe("sync.discover");
+  });
+});
+
+describe("the scheduled discovery", () => {
+  const until = async (done: () => boolean) => {
+    const deadline = Date.now() + 5000;
+    while (!done() && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  it("is scheduled every 24 hours through the jobs interface", () => {
+    const { logger } = build();
+    const jobs = createJobs({ logger });
+    registerDiscoverySchedule(jobs, database.db, () => true);
+    expect(DISCOVERY_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+    expect(() => jobs.schedule(DISCOVERY_SCHEDULE_JOB, 1000)).toThrow(
+      /already scheduled/,
+    );
+  });
+
+  it("discovers every active, non-suspended installation and no other", async () => {
+    addInstallation(1);
+    addInstallation(2, true);
+    addInstallation(3);
+    active.delete(3);
+    addInstallation(4);
+    for (const id of [1, 2, 3, 4]) {
+      listing[id] = [{ id, owner: `acct-${String(id)}`, name: "r" }];
+    }
+    const { discovery, logger } = build();
+    const jobs = createJobs({ logger });
+    registerDiscoveryJob(jobs, discovery, logger);
+    registerDiscoverySchedule(jobs, database.db, (id) => active.has(id));
+    jobs.start();
+    expect(jobs.enqueue(DISCOVERY_SCHEDULE_JOB, undefined)).toBe(true);
+    await until(() => allRepos().length === 2);
+    await jobs.stop();
+    expect(allRepos().map((row) => row.installationId)).toEqual([1, 4]);
+    expect(listRequests.map((request) => request.installation).sort()).toEqual([
+      1, 4,
+    ]);
+  });
+
+  it("discovers an installation at the next scheduled run after a listing answered 502, and logs the failure with the installation id", async () => {
+    addInstallation(1);
+    listing[1] = [{ id: 1, owner: "acme", name: "r", openIssues: 1 }];
+    let failing = true;
+    const attempts: number[] = [];
+    fake.server.use(
+      http.get(`${FAKE_API_URL}/installation/repositories`, () => {
+        if (!failing) return undefined;
+        attempts.push(1);
+        return HttpResponse.json({ message: "bad gateway" }, { status: 502 });
+      }),
+    );
+    const { discovery, logger } = build();
+    const jobs = createJobs({ logger });
+    registerDiscoveryJob(jobs, discovery, logger);
+    registerDiscoverySchedule(jobs, database.db, (id) => active.has(id), 30);
+    jobs.start();
+    try {
+      const failures = () =>
+        logs.filter(
+          (record) =>
+            record.level === 40 &&
+            String(record.msg).startsWith("repository discovery failed"),
+        );
+      await until(() => failures().length > 0);
+      expect(failures()[0]).toMatchObject({ installationId: 1 });
+      // the first run is the original request and the client's three retries
+      expect(attempts.length).toBeGreaterThanOrEqual(4);
+      expect(allRepos()).toEqual([]);
+
+      failing = false;
+      await until(() => allRepos().length > 0);
+      expect(repoRow(1)).toMatchObject({
+        syncState: "pending",
+        installationId: 1,
+      });
+      expect(queued.at(-1)).toEqual([{ id: "R_1", installationId: 1 }]);
+    } finally {
+      await jobs.stop();
+    }
   });
 });

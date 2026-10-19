@@ -800,6 +800,63 @@ describe("process entry", () => {
       }
     });
 
+    it("schedules a daily discovery that recovers an installation whose discovery failed", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      let failing = true;
+      fake.server.use(
+        ...repoWithIssues(),
+        http.get(`${FAKE_API_URL}/installation/repositories`, () =>
+          failing
+            ? HttpResponse.json({ message: "Not Found" }, { status: 404 })
+            : undefined,
+        ),
+      );
+      try {
+        const entry = await start();
+        const failures = () =>
+          output
+            .join("")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as Record<string, unknown>)
+            .filter(
+              (record) =>
+                record.level === 40 &&
+                String(record.msg).startsWith("repository discovery failed"),
+            );
+        await until(() => failures().length > 0);
+        expect(failures()[0]).toMatchObject({
+          installationId: INSTALLATION_ID,
+        });
+        expect(repos(entry)).toEqual([]);
+
+        failing = false;
+        expect(() => entry.jobs.schedule("sync.discover-all", 1000)).toThrow(
+          /already scheduled/,
+        );
+        expect(entry.jobs.enqueue("sync.discover-all", undefined)).toBe(true);
+        await until(() => readyWithIssues(entry));
+        expect(repos(entry)).toEqual([
+          {
+            id: "R_1",
+            installation_id: INSTALLATION_ID,
+            sync_state: "ready",
+            open_issue_count: 3,
+          },
+        ]);
+      } finally {
+        fake.close();
+      }
+    });
+
     it("schedules the daily resync of the ready repositories", async () => {
       const seed = openAndMigrate(dataDir);
       seed.db
