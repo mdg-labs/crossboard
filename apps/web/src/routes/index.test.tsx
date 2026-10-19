@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/app";
 import { details, summary } from "@/components/detail/test-data";
+import { LEADING_WIDTH } from "@/components/issue-list/issue-table";
 import type { IssueItem } from "@/lib/issues";
 import { createQueryClient } from "@/lib/query-client";
 import { createAppRouter } from "@/router";
@@ -652,5 +653,141 @@ describe("the nesting mode in the URL", () => {
 
     await waitFor(() => expect(history.location.search).toContain("bug"));
     expect(history.location.search).toContain("nest=1");
+  });
+});
+
+describe("blocked issues in the list", () => {
+  const blocked = issue(1, {
+    title: "Stuck",
+    isBlocked: true,
+    blockedBy: { open: 1, notAccessible: 2 },
+  });
+  const rowOf = (title: string) =>
+    screen.getByText(title).closest("tr") as HTMLElement;
+
+  it("marks a blocked row in its first cell with the number of blockers", async () => {
+    stubServer({ issues: () => page([blocked, issue(2, { title: "Free" })]) });
+    renderList();
+    await screen.findByText("Stuck");
+
+    const row = rowOf("Stuck");
+    expect(row.getAttribute("data-blocked")).toBe("true");
+    const first = row.querySelector("td:first-child") as HTMLElement;
+    const marker = within(first).getByRole("img", { name: "Blocked by 3" });
+    expect(first.contains(marker)).toBe(true);
+    expect(
+      marker.compareDocumentPosition(within(first).getByText("acme/widgets")),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(row.className).toContain("data-blocked:*:first:shadow-");
+    expect(within(row).getByText("blocked")).toBeTruthy();
+  });
+
+  it("says how many issues block it in a tooltip", async () => {
+    stubServer({ issues: () => page([blocked]) });
+    renderList();
+    const marker = await screen.findByRole("img", { name: "Blocked by 3" });
+
+    fireEvent.pointerEnter(marker);
+    fireEvent.mouseEnter(marker);
+    fireEvent.pointerMove(marker);
+    fireEvent.mouseMove(marker);
+
+    expect(
+      await screen.findByText("Blocked by 3", {}, { timeout: 3000 }),
+    ).toBeTruthy();
+  });
+
+  it("marks neither an issue that is not blocked nor one whose blockers are all closed", async () => {
+    stubServer({
+      issues: () =>
+        page([
+          issue(2, { title: "Free" }),
+          issue(3, {
+            title: "Blocks others",
+            blocking: { open: 2, notAccessible: 0 },
+          }),
+          issue(4, { title: "Blockers closed" }),
+        ]),
+    });
+    renderList();
+    await screen.findByText("Free");
+
+    for (const title of ["Free", "Blocks others", "Blockers closed"]) {
+      expect(rowOf(title).hasAttribute("data-blocked")).toBe(false);
+      expect(within(rowOf(title)).queryByRole("img")).toBeNull();
+    }
+  });
+});
+
+describe("the columns of the list", () => {
+  it("lead with the columns that fit a 1024 px viewport", async () => {
+    stubServer({ issues: () => page([issue(1)]) });
+    renderList();
+    await screen.findByText("Issue number 1");
+
+    const headers = [...document.querySelectorAll("thead th")].map(
+      (th) => th.textContent,
+    );
+    expect(headers.slice(0, 6)).toEqual([
+      "Repository",
+      "Issue",
+      "Title",
+      "Type",
+      "Updated",
+      "Open on GitHub",
+    ]);
+    expect(headers.slice(6)).toEqual([
+      "Labels",
+      "Assignees",
+      "Milestone",
+      "Dependencies",
+      "Sub-issues",
+    ]);
+    expect(LEADING_WIDTH).toBeLessThanOrEqual(1024);
+    const table = document.querySelector("table") as HTMLElement;
+    expect(table.className).not.toContain("min-w-[1500px]");
+    expect(Number.parseInt(table.style.minWidth, 10)).toBeGreaterThan(
+      LEADING_WIDTH,
+    );
+    const cells = [
+      ...(document.querySelector("tbody tr[data-issue-id]") as HTMLElement)
+        .children,
+    ];
+    expect(cells).toHaveLength(headers.length);
+    expect(cells[4]?.textContent).toBe("3 h ago");
+  });
+
+  it("gives a row a hover state that differs from the selected state", async () => {
+    stubServer({ issues: () => page([issue(1), issue(2)]) });
+    renderList();
+    await screen.findByText("Issue number 1");
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    const [selected, other] = [...dataRows()];
+    expect(selected?.getAttribute("data-state")).toBe("selected");
+    expect(other?.hasAttribute("data-state")).toBe(false);
+    expect(other?.className).toContain("hover:bg-accent!");
+    expect(selected?.className).toContain(
+      "data-[state=selected]:bg-primary/10!",
+    );
+    expect(selected?.className).not.toContain(
+      "data-[state=selected]:bg-accent",
+    );
+  });
+
+  it("keeps o opening the selected issue on GitHub", async () => {
+    stubServer({ issues: () => page([issue(1)]) });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    renderList();
+    await screen.findByText("Issue number 1");
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    fireEvent.keyDown(document.body, { key: "o" });
+
+    expect(open).toHaveBeenCalledWith(
+      "https://github.com/acme/widgets/issues/1",
+      "_blank",
+      "noopener,noreferrer",
+    );
   });
 });

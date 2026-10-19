@@ -25,23 +25,36 @@ const OVERSCAN = 10;
 /** Loads the next page when the rendered rows come this close to the end. */
 const LOAD_MARGIN = 20;
 
+/** Widths in px; the title takes what the table has beyond `TITLE_MIN_WIDTH`. */
 const COLUMNS = [
-  { key: "repo", label: "Repository", className: "w-40" },
-  { key: "number", label: "Issue", className: "w-16" },
-  { key: "title", label: "Title", className: "w-auto" },
-  { key: "type", label: "Type", className: "w-24" },
-  { key: "labels", label: "Labels", className: "w-48" },
-  { key: "assignees", label: "Assignees", className: "w-28" },
-  { key: "milestone", label: "Milestone", className: "w-28" },
-  { key: "dependencies", label: "Dependencies", className: "w-44" },
-  { key: "subissues", label: "Sub-issues", className: "w-32" },
-  { key: "updated", label: "Updated", className: "w-28" },
+  { key: "repo", label: "Repository", width: 160 },
+  { key: "number", label: "Issue", width: 64 },
+  { key: "title", label: "Title", width: null },
+  { key: "type", label: "Type", width: 96 },
+  { key: "updated", label: "Updated", width: 112 },
   {
     key: "open",
     label: <span className="sr-only">Open on GitHub</span>,
-    className: "w-12",
+    width: 48,
   },
+  { key: "labels", label: "Labels", width: 192 },
+  { key: "assignees", label: "Assignees", width: 112 },
+  { key: "milestone", label: "Milestone", width: 112 },
+  { key: "dependencies", label: "Dependencies", width: 176 },
+  { key: "subissues", label: "Sub-issues", width: 128 },
 ];
+
+/** The columns that lead the row and must fit the narrowest desktop viewport (SPEC FR-12, D-13). */
+const LEADING_COLUMNS = 6;
+export const TITLE_MIN_WIDTH = 288;
+export const LEADING_WIDTH =
+  COLUMNS.slice(0, LEADING_COLUMNS).reduce(
+    (sum, column) => sum + (column.width ?? 0),
+    0,
+  ) + TITLE_MIN_WIDTH;
+const TABLE_MIN_WIDTH =
+  COLUMNS.reduce((sum, column) => sum + (column.width ?? 0), 0) +
+  TITLE_MIN_WIDTH;
 
 /**
  * The virtualized list (SPEC FR-11). In nesting mode (`nest`) `items` are the
@@ -140,7 +153,8 @@ export function IssueTable({
   return (
     <>
       <Table
-        className="min-w-[1500px] table-fixed border-separate border-spacing-0"
+        className="table-fixed border-separate border-spacing-0"
+        style={{ minWidth: TABLE_MIN_WIDTH }}
         render={
           <div className="min-h-0 flex-1 overflow-auto" ref={scrollRef} />
         }
@@ -148,7 +162,12 @@ export function IssueTable({
         <TableHeader className="sticky top-0 z-10 bg-background [&_th]:border-b">
           <TableRow className="border-b-0">
             {COLUMNS.map((column) => (
-              <TableHead className={column.className} key={column.key}>
+              <TableHead
+                key={column.key}
+                style={
+                  column.width === null ? undefined : { width: column.width }
+                }
+              >
                 {column.label}
               </TableHead>
             ))}

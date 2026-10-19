@@ -5,6 +5,7 @@ import {
   repoQualifier,
 } from "@/components/filter-bar/qualifiers";
 import { issueTypeColors, labelColors } from "@/components/issue-list/colors";
+import { BlockedMarker } from "@/components/blocked-marker";
 import { RelativeTime } from "@/components/issue-list/relative-time";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -72,7 +73,8 @@ export function IssueRow({
   return (
     <TableRow
       aria-current={selected ? "true" : undefined}
-      className="cursor-pointer [&>td]:h-11 [&>td]:border-b [&>td]:py-0"
+      className="cursor-pointer hover:bg-accent! data-blocked:*:first:shadow-[inset_3px_0_0_0_var(--destructive)] data-[state=selected]:bg-primary/10! data-[state=selected]:hover:bg-primary/15! [&>td]:h-11 [&>td]:border-b [&>td]:py-0"
+      data-blocked={issue.isBlocked ? "true" : undefined}
       data-issue-id={issue.id}
       onClick={(event) => {
         if (
@@ -85,15 +87,18 @@ export function IssueRow({
       data-state={selected ? "selected" : undefined}
     >
       <TableCell className="truncate">
-        <Button
-          className="-mx-2 max-w-full justify-start font-normal text-muted-foreground"
-          onClick={() => onFilter(repoQualifier(issue.repo))}
-          size="xs"
-          title={`Filter by ${repo}`}
-          variant="link"
-        >
-          <span className="truncate">{repo}</span>
-        </Button>
+        <div className="flex min-w-0 items-center gap-1">
+          <BlockedMarker issue={issue} />
+          <Button
+            className="-mx-1 min-w-0 justify-start font-normal text-muted-foreground"
+            onClick={() => onFilter(repoQualifier(issue.repo))}
+            size="xs"
+            title={`Filter by ${repo}`}
+            variant="link"
+          >
+            <span className="truncate">{repo}</span>
+          </Button>
+        </div>
       </TableCell>
       <TableCell className="text-muted-foreground tabular-nums">
         #{issue.number}
@@ -157,6 +162,19 @@ export function IssueRow({
             {issue.type.name}
           </Badge>
         )}
+      </TableCell>
+      <TableCell className="text-muted-foreground">
+        <RelativeTime timestamp={issue.updatedAt} />
+      </TableCell>
+      <TableCell>
+        <Button
+          aria-label={`Open ${repo}#${issue.number} on GitHub`}
+          render={<a href={issue.url} rel="noreferrer" target="_blank" />}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <ExternalLinkIcon aria-hidden="true" />
+        </Button>
       </TableCell>
       <TableCell>
         <div className="flex gap-1 overflow-hidden">
@@ -238,19 +256,6 @@ export function IssueRow({
             </span>
           </div>
         ) : null}
-      </TableCell>
-      <TableCell className="text-muted-foreground">
-        <RelativeTime timestamp={issue.updatedAt} />
-      </TableCell>
-      <TableCell>
-        <Button
-          aria-label={`Open ${repo}#${issue.number} on GitHub`}
-          render={<a href={issue.url} rel="noreferrer" target="_blank" />}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <ExternalLinkIcon aria-hidden="true" />
-        </Button>
       </TableCell>
     </TableRow>
   );

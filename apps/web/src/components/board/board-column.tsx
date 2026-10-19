@@ -9,9 +9,10 @@ import type { BoardCard as CardData } from "@/lib/board-cards";
 export const COLUMN_CARD_LIMIT = 200;
 
 /**
- * One column of a board: its name, the number of top-level cards, and the
- * cards in a Scroll Area. Only the first 200 cards are rendered; a Button
- * reveals the rest.
+ * One column of a board: a recessed lane (a stronger tint than its cards, no
+ * border, a smaller radius) with its name and the number of top-level cards
+ * pinned above the cards in a Scroll Area. Only the first 200 cards are
+ * rendered; a Button reveals the rest.
  */
 export function BoardColumn({
   name,
@@ -31,7 +32,7 @@ export function BoardColumn({
   return (
     <section
       aria-label={name}
-      className="flex w-80 shrink-0 flex-col self-stretch rounded-2xl border bg-muted/40"
+      className="flex w-80 shrink-0 flex-col self-stretch rounded-lg bg-muted dark:bg-black/20"
     >
       <header className="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
         <h2 className="truncate font-medium text-sm">{name}</h2>
