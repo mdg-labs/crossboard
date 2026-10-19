@@ -275,7 +275,10 @@ describe("/settings sync state", () => {
     const acme = (await within(section).findByText("acme")).closest(
       "[data-slot=card]",
     ) as HTMLElement;
-    expect(acme.textContent).toContain("4,000 of 5,000 remaining, resets");
+    const number = new Intl.NumberFormat();
+    expect(acme.textContent).toContain(
+      `${number.format(4000)} of ${number.format(5000)} remaining, resets`,
+    );
     expect(acme.textContent).toContain("GraphQL pointsUnknown");
     const octocat = within(section)
       .getByText("octocat")
