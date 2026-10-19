@@ -33,6 +33,13 @@ existing line by adding its PR number.
 ## Web
 
 - **Offset paging duplicates** — pages fetched by offset over a list whose order can change between requests are concatenated as they arrive, so a row that moved comes back twice with the same React key — PR 88
+- **Span-only text edit** — a filter term removed by its AST span alone, while the span excludes the parentheses around it, so the edit leaves `()` and the result no longer parses — PR 91
+- **Early resource release** — a blob URL revoked in the same task as the `click()` that starts its download, so browsers that start the download afterwards fail it — PR 91
+- **Copied helper** — a module-private helper (the API error mapper) copied verbatim into each new client module instead of exported once, so the copies can drift — PR 91
+
+## Tests
+
+- **Vacuous assertion** — a fixture keyed by a literal id (`[1]`) that matches the intended row only by insertion order, so a reorder makes the case pass without testing what it names — PR 91
 
 ## Threat model
 
