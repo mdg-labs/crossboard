@@ -119,6 +119,7 @@ function build() {
   const github = createGithubClient({
     apiUrl: config.githubApiUrl,
     webUrl: config.githubWebUrl,
+    sleep: () => Promise.resolve(),
     logger,
   });
   access = createTestAccess({

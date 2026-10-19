@@ -103,7 +103,6 @@ registerAccessJob(jobs, access, database.db, logger);
 export const installations = createInstallationClient({
   github,
   credentials: () => setup.credentials(),
-  logger,
 });
 
 const app = createApp({

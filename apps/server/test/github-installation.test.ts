@@ -62,12 +62,12 @@ beforeEach(() => {
   github = createGithubClient({
     apiUrl: FAKE_API_URL,
     webUrl: FAKE_WEB_URL,
+    sleep: () => Promise.resolve(),
     logger,
   });
   client = createInstallationClient({
     github,
     credentials: () => current,
-    logger,
     now: () => Date.now() + clockOffset,
   });
 });
@@ -175,7 +175,7 @@ describe("installation tokens", () => {
       .catch(() => undefined);
 
     const output = logs.join("");
-    expect(output).toContain("github graphql");
+    expect(output).toContain("github request");
     expect(installationTokens.issued.length).toBeGreaterThan(0);
     expect(installationTokens.jwts.length).toBeGreaterThan(0);
     for (const secret of [
@@ -209,19 +209,23 @@ describe("GraphQL", () => {
     }
   });
 
-  it("logs the installation, repo and cost at debug", async () => {
+  it("logs the installation, repo, cost and remaining budget at debug", async () => {
     await client.graphql(INSTALLATION_ID, queries.openIssuesPage, variables, {
       repo,
     });
     const record = logs
       .map((line) => JSON.parse(line) as Record<string, unknown>)
-      .find((entry) => entry.msg === "github graphql");
+      .find(
+        (entry) =>
+          entry.msg === "github request" && entry.query === "OpenIssuesPage",
+      );
     expect(record).toMatchObject({
       level: 20,
       installationId: INSTALLATION_ID,
       repo,
       query: "OpenIssuesPage",
       cost: 4,
+      remaining: 4996,
     });
   });
 

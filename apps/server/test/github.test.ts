@@ -43,6 +43,7 @@ beforeEach(() => {
   client = createGithubClient({
     apiUrl: FAKE_API_URL,
     webUrl: FAKE_WEB_URL,
+    sleep: () => Promise.resolve(),
     logger: createLogger("debug", { write: (chunk) => logs.push(chunk) }),
   });
 });
@@ -151,10 +152,20 @@ describe("only the D-18 credential exchanges are non-GET", () => {
         issueInstallationToken(),
         "GET /installation/repositories",
       ),
+    restGetConditional: (target) =>
+      target.restGetConditional(
+        issueInstallationToken(),
+        "GET /installation/repositories",
+        '"etag"',
+      ),
   };
 
   it("classifies every method the client exposes", () => {
-    expect(Object.keys(invoke).sort()).toEqual(Object.keys(client).sort());
+    expect(Object.keys(invoke).sort()).toEqual(
+      Object.keys(client)
+        .filter((name) => name !== "budgets")
+        .sort(),
+    );
   });
 
   it.each(Object.keys(invoke))(

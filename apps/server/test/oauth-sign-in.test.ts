@@ -138,6 +138,7 @@ function build(env: Record<string, string> = {}) {
   const github = createGithubClient({
     apiUrl: config.githubApiUrl,
     webUrl: config.githubWebUrl,
+    sleep: () => Promise.resolve(),
     logger,
   });
   const app = createApp({

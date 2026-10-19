@@ -5,6 +5,7 @@ import { createServer, type Server } from "node:http";
 import { connect } from "node:net";
 import { setTimeout as realSleep } from "node:timers/promises";
 import Database from "better-sqlite3";
+import { http, HttpResponse } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queries } from "../src/github/index.js";
 import { githubEnv, SENTINEL, validEnv, freePort } from "./helpers.js";
@@ -445,6 +446,72 @@ describe("process entry", () => {
       ]);
       expect(graphqlRequests).toHaveLength(1);
       expect(output.join("")).not.toContain("ghs_fake_installation_token");
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("tracks budgets and limits concurrency in the clients it creates", async () => {
+    stubEnv({
+      ...validEnv,
+      ...githubEnv,
+      GITHUB_APP_ID: APP_ID,
+      GITHUB_PRIVATE_KEY: APP_PRIVATE_KEY,
+      CROSSBOARD_GITHUB_API_URL: FAKE_API_URL,
+      CROSSBOARD_GITHUB_WEB_URL: FAKE_WEB_URL,
+    });
+    const fake = createFakeGithub();
+    fake.listen();
+    try {
+      const entry = await start();
+      expect(entry.installations.budgets.get(INSTALLATION_ID)).toEqual({
+        rest: null,
+        graphql: null,
+      });
+      await entry.installations.graphql(
+        INSTALLATION_ID,
+        queries.openIssuesPage,
+        {
+          owner: "octocat",
+          name: "repo-1",
+        },
+      );
+      expect(entry.github.budgets.get(INSTALLATION_ID).graphql).toMatchObject({
+        remaining: 4996,
+      });
+
+      let inFlight = 0;
+      let peak = 0;
+      const release: (() => void)[] = [];
+      fake.server.use(
+        http.get(`${FAKE_API_URL}/installation/repositories`, async () => {
+          inFlight++;
+          peak = Math.max(peak, inFlight);
+          await new Promise<void>((resolve) => release.push(resolve));
+          inFlight--;
+          return HttpResponse.json({ total_count: 0, repositories: [] });
+        }),
+      );
+      const calls = Array.from({ length: 8 }, (_, index) =>
+        entry.github.restGet(
+          `token-${String(index)}`,
+          "GET /installation/repositories",
+        ),
+      );
+      await vi.waitFor(() => expect(inFlight).toBe(4));
+      await realSleep(50);
+      expect(inFlight).toBe(4);
+      let settled = false;
+      void Promise.all(calls).then(() => {
+        settled = true;
+      });
+      const deadline = Date.now() + 4_000;
+      while (!settled && Date.now() < deadline) {
+        for (const done of release.splice(0)) done();
+        await realSleep(5);
+      }
+      expect(settled).toBe(true);
+      expect(peak).toBe(4);
     } finally {
       fake.close();
     }

@@ -1,26 +1,32 @@
-import type { Logger } from "pino";
-import { z } from "zod";
 import type { GithubAppCredentials } from "../config/index.js";
 import { GithubError } from "./errors.js";
 import type {
   GithubClient,
+  GithubConditionalResult,
   GithubGetRoute,
   GithubInstallationToken,
 } from "./client.js";
+import type { GithubBudgets } from "./rate-limit.js";
 import { assertGetRoute, type GithubQuery } from "./query.js";
 
 /** An installation token with less time left than this is renewed before use (SPEC §5.2). */
 export const INSTALLATION_TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 export interface InstallationClientOptions {
-  github: Pick<GithubClient, "createInstallationToken" | "graphql" | "restGet">;
+  github: Pick<
+    GithubClient,
+    | "budgets"
+    | "createInstallationToken"
+    | "graphql"
+    | "restGet"
+    | "restGetConditional"
+  >;
   /** The App credentials in effect now, else null. */
   credentials: () => GithubAppCredentials | null;
-  logger: Logger;
   now?: () => number;
 }
 
-/** What a call is for, logged beside the installation. */
+/** What a call is for, logged beside the installation (and booked against its budget). */
 export interface RequestContext {
   /** `owner/name` of the repository the call concerns. */
   repo?: string;
@@ -31,7 +37,12 @@ export interface RequestContext {
  * is created, cached and renewed here and never leaves this module.
  */
 export interface InstallationClient {
-  /** Runs a query as the installation. Logs its `rateLimit { cost }` at `debug`. */
+  /** What each installation has left; see {@link GithubBudgets}. */
+  readonly budgets: GithubBudgets;
+  /**
+   * Runs a query as the installation, within the client's concurrency limits
+   * and rate-limit handling (SPEC §6.1, §6.5).
+   */
   graphql(
     installationId: number,
     query: GithubQuery,
@@ -45,14 +56,19 @@ export interface InstallationClient {
     params?: Record<string, unknown>,
     context?: RequestContext,
   ): Promise<unknown>;
+  /** Runs a REST `GET` as the installation with `If-None-Match: <etag>`. */
+  restConditional(
+    installationId: number,
+    route: GithubGetRoute,
+    etag: string,
+    params?: Record<string, unknown>,
+    context?: RequestContext,
+  ): Promise<GithubConditionalResult>;
 }
-
-const costSchema = z.object({ rateLimit: z.object({ cost: z.number() }) });
 
 export function createInstallationClient({
   github,
   credentials,
-  logger,
   now = Date.now,
 }: InstallationClientOptions): InstallationClient {
   const cache = new Map<string, GithubInstallationToken>();
@@ -105,33 +121,35 @@ export function createInstallationClient({
   }
 
   return {
+    budgets: github.budgets,
+
     async graphql(installationId, query, variables, context) {
-      const data = await withToken(installationId, (token) =>
-        github.graphql(token, query, variables),
-      );
-      const cost = costSchema.safeParse(data);
-      logger.debug(
-        {
+      return withToken(installationId, (token) =>
+        github.graphql(token, query, variables, {
           installationId,
-          repo: context?.repo,
-          query: query.name,
-          cost: cost.success ? cost.data.rateLimit.cost : undefined,
-        },
-        "github graphql",
+          ...(context?.repo === undefined ? {} : { repo: context.repo }),
+        }),
       );
-      return data;
     },
 
     async rest(installationId, route, params, context) {
       assertGetRoute(route, params);
-      const data = await withToken(installationId, (token) =>
-        github.restGet(token, route, params),
+      return withToken(installationId, (token) =>
+        github.restGet(token, route, params, {
+          installationId,
+          ...(context?.repo === undefined ? {} : { repo: context.repo }),
+        }),
       );
-      logger.debug(
-        { installationId, repo: context?.repo, route },
-        "github rest",
+    },
+
+    async restConditional(installationId, route, etag, params, context) {
+      assertGetRoute(route, params);
+      return withToken(installationId, (token) =>
+        github.restGetConditional(token, route, etag, params, {
+          installationId,
+          ...(context?.repo === undefined ? {} : { repo: context.repo }),
+        }),
       );
-      return data;
     },
   };
 }

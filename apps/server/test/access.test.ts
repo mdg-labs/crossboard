@@ -79,6 +79,7 @@ function build(
   const github = createGithubClient({
     apiUrl: FAKE_API_URL,
     webUrl: FAKE_WEB_URL,
+    sleep: () => Promise.resolve(),
     logger,
   });
   const tokens = createUserTokens({
