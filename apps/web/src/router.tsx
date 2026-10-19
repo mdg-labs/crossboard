@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
 import { parseIndexSearch } from "@/lib/issues";
+import { BoardEditRoute, BoardNewRoute } from "@/routes/board-edit";
 import { IndexRoute } from "@/routes/index";
 import { IssueRoute } from "@/routes/issue";
 import { NotAllowedRoute } from "@/routes/not-allowed";
@@ -52,6 +53,18 @@ const issueRoute = createRoute({
   component: IssueRoute,
 });
 
+const boardNewRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/b/new",
+  component: BoardNewRoute,
+});
+
+const boardEditRoute = createRoute({
+  getParentRoute: () => shellRoute,
+  path: "/b/$boardId/edit",
+  component: BoardEditRoute,
+});
+
 const settingsRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/settings",
@@ -71,7 +84,13 @@ const notAllowedRoute = createRoute({
 });
 
 const routeTree = rootRoute.addChildren([
-  shellRoute.addChildren([indexRoute, issueRoute, settingsRoute]),
+  shellRoute.addChildren([
+    indexRoute,
+    issueRoute,
+    boardNewRoute,
+    boardEditRoute,
+    settingsRoute,
+  ]),
   setupRoute,
   notAllowedRoute,
 ]);

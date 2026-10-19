@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/app";
 import { createQueryClient } from "@/lib/query-client";
+import type { Board } from "@/lib/boards";
 import type { SavedView } from "@/lib/views";
 import { createAppRouter } from "@/router";
 
@@ -34,6 +35,19 @@ const view = (id: number, overrides: Partial<SavedView> = {}): SavedView => ({
   ...overrides,
 });
 
+const board = (id: number, overrides: Partial<Board> = {}): Board => ({
+  id,
+  name: `Board ${id}`,
+  baseFilter: "",
+  sort: "updated-desc",
+  subIssueMode: "collapsed",
+  showOther: false,
+  columns: [{ id: id * 10, name: "To do", filter: "" }],
+  createdAt: 1,
+  updatedAt: 1,
+  ...overrides,
+});
+
 interface Call {
   method: string;
   path: string;
@@ -45,6 +59,7 @@ interface Call {
 function stubServer(
   initial: SavedView[] | "error" | "pending",
   answers: {
+    boards?: Board[] | "error" | "pending";
     post?: (body: Record<string, unknown>) => Response;
     patch?: (id: number, body: Record<string, unknown>) => Response;
     delete?: (id: number) => Response;
@@ -77,6 +92,24 @@ function stubServer(
           installations: [],
           installUrl: "https://github.com/apps/crossboard/installations/new",
         });
+      }
+      if (url.pathname === "/api/boards" && method === "GET") {
+        const boards = answers.boards ?? [];
+        if (boards === "pending") {
+          return new Promise<Response>(() => undefined);
+        }
+        return boards === "error"
+          ? new Response(null, { status: 500 })
+          : Response.json({ items: boards });
+      }
+      const boardMatch = /^\/api\/boards\/(\d+)$/.exec(url.pathname);
+      if (boardMatch !== null && method === "GET") {
+        const found = (
+          Array.isArray(answers.boards) ? answers.boards : []
+        ).find((entry) => entry.id === Number(boardMatch[1]));
+        return found === undefined
+          ? new Response(null, { status: 404 })
+          : Response.json(found);
       }
       if (url.pathname === "/api/views" && method === "GET") {
         if (initial === "pending") {
@@ -452,5 +485,92 @@ describe("renaming and deleting the open view", () => {
     expect(await within(dialog).findByText("Database is locked")).toBeTruthy();
     expect(screen.getByRole("alertdialog")).toBeTruthy();
     expect(trigger().textContent).toBe("My bugs");
+  });
+});
+
+describe("boards in the switcher", () => {
+  it("lists the user's boards next to the saved views", async () => {
+    stubServer([view(1, { name: "My bugs" })], {
+      boards: [board(3, { name: "Sprint" }), board(4, { name: "Roadmap" })],
+    });
+    renderApp();
+    const menu = await openMenu();
+
+    await within(menu).findByRole("menuitem", { name: "Sprint" });
+    expect(
+      within(menu).getByRole("menuitem", { name: "Roadmap" }),
+    ).toBeTruthy();
+    expect(
+      await within(menu).findByRole("menuitemradio", { name: "My bugs" }),
+    ).toBeTruthy();
+  });
+
+  it("opens a board at /b/:id", async () => {
+    stubServer([], { boards: [board(3, { name: "Sprint" })] });
+    const history = renderApp();
+    const menu = await openMenu();
+
+    fireEvent.click(
+      await within(menu).findByRole("menuitem", { name: "Sprint" }),
+    );
+
+    await waitFor(() => expect(history.location.pathname).toBe("/b/3"));
+  });
+
+  it("opens the form for a new board", async () => {
+    stubServer([], { boards: [] });
+    const history = renderApp();
+    await openMenu();
+
+    clickItem(/^New board/);
+
+    await waitFor(() => expect(history.location.pathname).toBe("/b/new"));
+  });
+
+  it("names the open board and offers to edit it", async () => {
+    stubServer([], { boards: [board(3, { name: "Sprint" })] });
+    renderApp("/b/new");
+    await openMenu();
+    expect(screen.queryByRole("menuitem", { name: /^Edit/ })).toBeNull();
+    cleanup();
+
+    stubServer([], { boards: [board(3, { name: "Sprint" })] });
+    renderApp("/b/3/edit");
+    await waitFor(() => expect(trigger().textContent).toBe("Sprint"));
+    await openMenu();
+
+    expect(
+      await screen.findByRole("menuitem", { name: "Edit “Sprint”…" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("menuitem", { name: /Save current view/ }),
+    ).toBeNull();
+  });
+
+  it("shows a loading state while the boards load", async () => {
+    stubServer([], { boards: "pending" });
+    renderApp();
+    const menu = await openMenu();
+
+    expect(
+      within(menu).getByRole("status", { name: "Loading boards" }),
+    ).toBeTruthy();
+  });
+
+  it("shows an error with a retry when the boards cannot be loaded", async () => {
+    const server = stubServer([], { boards: "error" });
+    renderApp();
+    const menu = await openMenu();
+
+    expect(
+      await within(menu).findByText("Could not load your boards."),
+    ).toBeTruthy();
+    const before = server.calls("GET", "/api/boards").length;
+
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Try again" }));
+
+    await waitFor(() =>
+      expect(server.calls("GET", "/api/boards").length).toBeGreaterThan(before),
+    );
   });
 });
