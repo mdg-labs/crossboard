@@ -173,6 +173,7 @@ describe("errors", () => {
     expect((error as GithubError).githubMessage).toBe(
       "The code passed is incorrect or expired.",
     );
+    expect((error as GithubError).code).toBe("bad_verification_code");
     expect((error as Error).message).not.toContain(CLIENT_SECRET);
   });
 

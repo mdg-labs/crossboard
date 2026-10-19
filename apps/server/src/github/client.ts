@@ -223,6 +223,7 @@ export function createGithubClient(options: GithubClientOptions): GithubClient {
       throw new GithubError(
         400,
         failure.data.error_description ?? failure.data.error,
+        failure.data.error,
       );
     }
     const tokens = parse(oauthSuccessSchema, data, "OAuth token");

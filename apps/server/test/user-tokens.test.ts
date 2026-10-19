@@ -203,6 +203,51 @@ describe("a user's access token", () => {
     expect(sessionsOf(userId)).toHaveLength(1);
   });
 
+  it("keeps the tokens and sessions when GitHub rejects the client credentials", async () => {
+    fake.server.use(
+      http.post(`${FAKE_WEB_URL}/login/oauth/access_token`, () =>
+        HttpResponse.json({
+          error: "incorrect_client_credentials",
+          error_description:
+            "The client_id and/or client_secret passed are incorrect.",
+        }),
+      ),
+    );
+    const userId = seed({
+      access: "ghu_old",
+      refresh: "good-refresh",
+      accessExpiresAt: NOW,
+    });
+    const before = stored(userId);
+    await expect(build().accessToken(userId)).rejects.toMatchObject({
+      code: "incorrect_client_credentials",
+    });
+    expect(stored(userId)).toEqual(before);
+    expect(sessionsOf(userId)).toHaveLength(1);
+  });
+
+  it.each([403, 429])(
+    "keeps the tokens and sessions when the refresh fails with HTTP %i",
+    async (status) => {
+      fake.server.use(
+        http.post(`${FAKE_WEB_URL}/login/oauth/access_token`, () =>
+          HttpResponse.json({ message: "slow down" }, { status }),
+        ),
+      );
+      const userId = seed({
+        access: "ghu_old",
+        refresh: "good-refresh",
+        accessExpiresAt: NOW,
+      });
+      const before = stored(userId);
+      await expect(build().accessToken(userId)).rejects.toMatchObject({
+        status,
+      });
+      expect(stored(userId)).toEqual(before);
+      expect(sessionsOf(userId)).toHaveLength(1);
+    },
+  );
+
   it("throws, changing nothing, when there are no App credentials to refresh with", async () => {
     const userId = seed({
       access: "ghu_old",

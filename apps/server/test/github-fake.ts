@@ -104,8 +104,13 @@ export const githubHandlers = [
       (body.code === "good-code" ||
         (body.grant_type === "refresh_token" &&
           body.refresh_token === "good-refresh"));
-    return valid
-      ? HttpResponse.json(fakeOAuthTokens)
+    if (valid) return HttpResponse.json(fakeOAuthTokens);
+    return body.grant_type === "refresh_token"
+      ? HttpResponse.json({
+          error: "bad_refresh_token",
+          error_description:
+            "The refresh token passed is incorrect or expired.",
+        })
       : HttpResponse.json({
           error: "bad_verification_code",
           error_description: "The code passed is incorrect or expired.",

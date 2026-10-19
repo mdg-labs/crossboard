@@ -22,9 +22,10 @@ export interface UserTokens {
   /**
    * A user access token that is valid for at least the refresh margin, else
    * null when the user has no usable tokens: none stored, an expired refresh
-   * token, or a refresh GitHub rejected. In the last two cases the user's
-   * tokens and sessions are deleted. A refresh that fails for any other reason
-   * throws and changes nothing.
+   * token, or a refresh token GitHub rejected (`bad_refresh_token`). In the
+   * last two cases the user's tokens and sessions are deleted. A refresh that
+   * fails for any other reason, such as rejected client credentials or a rate
+   * limit, throws and changes nothing.
    */
   accessToken(userId: number): Promise<string | null>;
 }
@@ -76,11 +77,7 @@ export function createUserTokens({
         decrypt(refreshTokenEnc, appSecret),
       );
     } catch (error) {
-      if (
-        error instanceof GithubError &&
-        error.status >= 400 &&
-        error.status < 500
-      ) {
+      if (error instanceof GithubError && error.code === "bad_refresh_token") {
         revoke(userId);
         return null;
       }
