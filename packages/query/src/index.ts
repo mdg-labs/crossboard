@@ -1,3 +1,9 @@
+export { evaluate } from "./evaluate.js";
+export type {
+  EvaluationContext,
+  FilterableIssue,
+  IssueRelation,
+} from "./evaluate.js";
 export { parse } from "./parser.js";
 export type {
   AndNode,
