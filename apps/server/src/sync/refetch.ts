@@ -16,7 +16,7 @@ import {
   type IssueData,
   type IssueNode,
 } from "./issue-data.js";
-import { createRemoval, type Removal } from "./remove.js";
+import { createRemoval, type Removal, type RemovalWatch } from "./remove.js";
 import { writeRelations } from "./relations.js";
 
 const { installations, issues, repos } = schema;
@@ -170,6 +170,19 @@ export function createRefetch({
     requested: readonly string[],
     via?: number,
   ): Promise<number> {
+    const watch = removal.watch();
+    try {
+      return await run(requested, via, watch);
+    } finally {
+      watch.stop();
+    }
+  }
+
+  async function run(
+    requested: readonly string[],
+    via: number | undefined,
+    watch: RemovalWatch,
+  ): Promise<number> {
     let total = 0;
     const ids = [...new Set(requested)];
     const known = new Map<string, Known>();
@@ -258,11 +271,20 @@ export function createRefetch({
       );
     }
 
-    if (open.length > 0) {
+    // A removal that committed while the requests were in flight wins: what was
+    // fetched may predate it. Nothing awaits between this and the write.
+    const stored = open.filter((entry) => !watch.removed.has(entry.node.id));
+    if (stored.length < open.length) {
+      logger.debug(
+        { issues: open.length - stored.length },
+        "issue refetch skipped issues removed while it was in flight",
+      );
+    }
+    if (stored.length > 0) {
       const at = now();
       db.transaction((tx) => {
         const byRepo = new Map<string, { known: Known; data: IssueData[] }>();
-        for (const entry of open) {
+        for (const entry of stored) {
           const group = byRepo.get(entry.known.repoId) ?? {
             known: entry.known,
             data: [],

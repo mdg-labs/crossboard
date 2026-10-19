@@ -42,10 +42,24 @@ export interface Removal {
   remove(ids: readonly string[], reason: RemovalReason): Promise<number>;
 }
 
-export function createRemoval({ db, refetch }: RemovalOptions): Removal {
+/**
+ * The issues removed since it was opened. A refetch holds one from before it
+ * reads anything until it has written, so it can leave out an issue a removal
+ * deleted while its GraphQL request was in flight.
+ */
+export interface RemovalWatch {
+  readonly removed: ReadonlySet<string>;
+  stop(): void;
+}
+
+export function createRemoval({
+  db,
+  refetch,
+}: RemovalOptions): Removal & { watch(): RemovalWatch } {
   // A refetch can find the other side gone as well, and the two removals
   // would each wait on the other.
   const removing = new Set<string>();
+  const watches = new Set<Set<string>>();
 
   /**
    * The synced issues a removal of `ids` affects and so refetches: those on
@@ -94,6 +108,12 @@ export function createRemoval({ db, refetch }: RemovalOptions): Removal {
   }
 
   return {
+    watch() {
+      const removed = new Set<string>();
+      watches.add(removed);
+      return { removed, stop: () => watches.delete(removed) };
+    },
+
     async remove(requested, reason) {
       const ids = [...new Set(requested)].filter((id) => !removing.has(id));
       if (ids.length === 0) return 0;
@@ -149,6 +169,11 @@ export function createRemoval({ db, refetch }: RemovalOptions): Removal {
           }
           for (const repoId of repoIds) deleteUnusedLabels(tx, repoId);
         });
+        // Nothing awaits between the commit and this, so no refetch writes in
+        // between; ids not stored are recorded too, for a refetch adopting them.
+        for (const removed of watches) {
+          for (const id of ids) removed.add(id);
+        }
         return cost;
       } finally {
         for (const id of ids) removing.delete(id);

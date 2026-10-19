@@ -158,6 +158,9 @@ export function createFakeSyncGithub() {
     /** Fails every GraphQL request for which it returns a status. */
     failWith: undefined as
       ((request: FakeRequest) => number | undefined) | undefined,
+    /** Holds each issue lookup's answer, read when it arrived, until this settles. */
+    holdIssueLookup: undefined as
+      ((request: FakeRequest) => Promise<void>) | undefined,
   };
 
   const tokens = http.post(
@@ -263,6 +266,7 @@ export function createFakeSyncGithub() {
           ? null
           : fakeNode(found.issue, true, found.repo.id);
       });
+      await world.holdIssueLookup?.(seen);
       // GitHub answers with the node `null` and a NOT_FOUND entry per missing id.
       return HttpResponse.json({
         data: { rateLimit, nodes },
@@ -334,6 +338,7 @@ export function createFakeSyncGithub() {
       world.hidden = [];
       world.requests = [];
       world.failWith = undefined;
+      world.holdIssueLookup = undefined;
     },
     requestsFor: (name: string) =>
       world.requests.filter((entry) => entry.name === name),
