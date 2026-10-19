@@ -800,6 +800,51 @@ describe("process entry", () => {
       }
     });
 
+    it("schedules the daily resync of the ready repositories", async () => {
+      const seed = openAndMigrate(dataDir);
+      seed.db
+        .insert(schema.installations)
+        .values(installationRow(INSTALLATION_ID, "octocat"))
+        .run();
+      seed.db
+        .insert(schema.repos)
+        .values({
+          id: "R_1",
+          databaseId: 1,
+          installationId: INSTALLATION_ID,
+          owner: "octocat",
+          name: "repo-1",
+          private: false,
+          syncState: "ready",
+          openIssueCount: 0,
+          lastFullSyncAt: 1,
+          createdAt: 1,
+          updatedAt: 1,
+        })
+        .run();
+      seed.sqlite.close();
+      stubEnv(discoveryEnv());
+      const fake = createFakeGithub();
+      fake.listen();
+      fake.server.use(...repoWithIssues());
+      try {
+        const entry = await start();
+        expect(() => entry.jobs.schedule("sync.resync", 1000)).toThrow(
+          /already scheduled/,
+        );
+        expect(issueIds(entry)).toEqual([]);
+        expect(entry.jobs.enqueue("sync.resync", undefined)).toBe(true);
+        await until(() => issueIds(entry).length === 3);
+        expect(issueIds(entry)).toEqual([
+          { id: "I_1" },
+          { id: "I_2" },
+          { id: "I_3" },
+        ]);
+      } finally {
+        fake.close();
+      }
+    });
+
     it("discovers and syncs an installation when an access computation makes it active", async () => {
       const seed = openAndMigrate(dataDir);
       const live = signIn(seed.db, addUser(seed.db, "octocat").id);

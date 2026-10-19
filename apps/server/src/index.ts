@@ -30,6 +30,7 @@ import {
   registerDiscoveryJob,
 } from "./sync/discovery.js";
 import { createRefetch } from "./sync/refetch.js";
+import { registerResyncJob } from "./sync/resync.js";
 import {
   createSync,
   enqueueSync,
@@ -133,6 +134,7 @@ export const sync = createSync({
   logger,
 });
 registerSyncJob(jobs, sync);
+registerResyncJob(jobs, database.db, setup.allowlist);
 
 export const discovery = createDiscovery({
   db: database.db,

@@ -1,5 +1,5 @@
-import { inArray, or } from "drizzle-orm";
-import { schema } from "../db/index.js";
+import { and, inArray, isNotNull, notInArray, or } from "drizzle-orm";
+import { schema, type Db } from "../db/index.js";
 import {
   CHUNK,
   chunks,
@@ -8,7 +8,7 @@ import {
   type Tx,
 } from "./issue-data.js";
 
-const { issueDeps, issueRefs } = schema;
+const { issueDeps, issueRefs, issues } = schema;
 
 /**
  * Stores the issues' parents and dependency edges (SPEC §8.1) for the fetched
@@ -91,4 +91,34 @@ export function writeRelations(
   for (const part of chunks([...edges.values()], CHUNK)) {
     tx.insert(issueDeps).values(part).onConflictDoNothing().run();
   }
+}
+
+/**
+ * Deletes the `issue_refs` rows that no issue names as its parent and no
+ * `issue_deps` row names on either side (SPEC §8.2). Resolves to how many it
+ * deleted.
+ */
+export function pruneOrphanedRefs(db: Pick<Db, "delete" | "select">): number {
+  return db
+    .delete(issueRefs)
+    .where(
+      and(
+        notInArray(
+          issueRefs.id,
+          db
+            .select({ id: issues.parentId })
+            .from(issues)
+            .where(isNotNull(issues.parentId)),
+        ),
+        notInArray(
+          issueRefs.id,
+          db.select({ id: issueDeps.blockedId }).from(issueDeps),
+        ),
+        notInArray(
+          issueRefs.id,
+          db.select({ id: issueDeps.blockingId }).from(issueDeps),
+        ),
+      ),
+    )
+    .run().changes;
 }

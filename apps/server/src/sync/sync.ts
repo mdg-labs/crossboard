@@ -19,7 +19,7 @@ import {
   type IssueData,
   type IssueNode,
 } from "./issue-data.js";
-import { writeRelations } from "./relations.js";
+import { pruneOrphanedRefs, writeRelations } from "./relations.js";
 
 const { installations, repos } = schema;
 
@@ -66,7 +66,9 @@ export interface Sync {
    * deleted there; once it commits they are looked up again and removed by the
    * SPEC §8.2 rules. The repo goes `syncing`, then `ready`; a failure that
    * outlasts the client's retries leaves it `error` with the message and
-   * nothing replaced. Resolves to `skipped` for a repo that is gone, skipped,
+   * nothing replaced. Once the repo is `ready`, the `issue_refs` rows that no
+   * issue and no dependency references any more are deleted (SPEC §8.2).
+   * Resolves to `skipped` for a repo that is gone, skipped,
    * already syncing here, or whose installation is unknown, suspended or no
    * longer active, which is checked again before every write.
    */
@@ -327,12 +329,22 @@ export function createSync({
       );
       return "skipped";
     }
+    let pruned = 0;
+    try {
+      pruned = pruneOrphanedRefs(db);
+    } catch (error) {
+      logger.error(
+        { err: error, installationId, repo: fullName },
+        "pruning the unreferenced issue refs failed",
+      );
+    }
     logger.info(
       {
         installationId,
         repo: fullName,
         issues: fetched.length,
         dropped: replaced.length,
+        prunedRefs: pruned,
         pages,
         cost,
       },

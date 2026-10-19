@@ -22,6 +22,14 @@ import { createLogger } from "../src/logger.js";
 import { createRemoval } from "../src/sync/remove.js";
 import { createRefetch, REFETCH_BATCH } from "../src/sync/refetch.js";
 import {
+  DAY_MS,
+  registerResyncJob,
+  resyncDue,
+  resyncSlot,
+  RESYNC_INTERVAL_MS,
+  RESYNC_JOB,
+} from "../src/sync/resync.js";
+import {
   createSync,
   enqueueSyncAtStart,
   registerSyncJob,
@@ -1676,5 +1684,233 @@ describe("removing and refetching issues", () => {
         ["I_2", "Found again"],
       ]);
     });
+  });
+});
+
+describe("the daily resync", () => {
+  const DAY = 20_000 * DAY_MS;
+  const ORGS = { users: [], orgs: ["acct-1"] };
+  let clock: number;
+
+  const setLastSync = (id: string, at: number) =>
+    database.db
+      .update(schema.repos)
+      .set({ lastFullSyncAt: at })
+      .where(eq(schema.repos.id, id))
+      .run();
+  const lastSync = (id: string) => repoRow(id)?.lastFullSyncAt;
+  const refIds = () =>
+    database.db
+      .select({ id: schema.issueRefs.id })
+      .from(schema.issueRefs)
+      .orderBy(schema.issueRefs.id)
+      .all()
+      .map((row) => row.id);
+
+  /** Runs the scheduled check once and every sync it queues, then stops the queue. */
+  async function tick(allowlist = ORGS) {
+    const jobs = createJobs({ logger: createLogger("silent") });
+    const sync = build(() => clock);
+    let started = 0;
+    let finished = 0;
+    registerSyncJob(jobs, {
+      syncRepo: async (id) => {
+        started++;
+        try {
+          return await sync.syncRepo(id);
+        } finally {
+          finished++;
+        }
+      },
+    });
+    registerResyncJob(jobs, database.db, allowlist, () => clock);
+    jobs.start();
+    jobs.enqueue(RESYNC_JOB, undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const deadline = Date.now() + 5000;
+    while (finished < started && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await jobs.stop();
+    return started;
+  }
+
+  beforeEach(() => {
+    clock = DAY;
+  });
+
+  it("spreads the repositories' start times over the day, the same on every run", () => {
+    const slots = Array.from({ length: 200 }, (_, index) =>
+      resyncSlot(`R_kgDO${String(index)}`),
+    );
+    expect(slots.every((slot) => slot >= 0 && slot < DAY_MS)).toBe(true);
+    expect(new Set(slots).size).toBeGreaterThan(190);
+    const perSixHours = [0, 1, 2, 3].map(
+      (quarter) =>
+        slots.filter((slot) => Math.floor(slot / (DAY_MS / 4)) === quarter)
+          .length,
+    );
+    expect(Math.min(...perSixHours)).toBeGreaterThan(20);
+    expect(resyncSlot("R_kgDO7")).toBe(slots[7]);
+  });
+
+  it("is due once a day, after the repository's slot has come round since its last sync", () => {
+    const slot = resyncSlot("R_1");
+    const lastSync = DAY + slot + 1000;
+    expect(resyncDue("R_1", lastSync, DAY + slot + DAY_MS - 1)).toBe(false);
+    expect(resyncDue("R_1", lastSync, DAY + slot + DAY_MS)).toBe(true);
+    expect(resyncDue("R_1", lastSync, DAY + slot + 2 * DAY_MS - 1)).toBe(true);
+    expect(resyncDue("R_1", DAY + slot - 1, DAY + slot)).toBe(true);
+    expect(resyncDue("R_1", null, DAY)).toBe(true);
+  });
+
+  it("resyncs only the ready repositories whose slot has come, each at its own time", async () => {
+    addInstallation(1);
+    const [early = "", , late = ""] = ["R_1", "R_2", "R_3"].sort(
+      (a, b) => resyncSlot(a) - resyncSlot(b),
+    );
+    expect(resyncSlot(early)).toBeLessThan(resyncSlot(late));
+    for (const id of [early, late]) {
+      addRepo({ name: `acme/${id.toLowerCase()}`, id, issues: [] }, 1, "ready");
+      setLastSync(id, DAY);
+    }
+    clock = DAY + resyncSlot(early) + 1;
+    const earlyRun = clock;
+    expect(await tick()).toBe(1);
+    expect(lastSync(early)).toBe(earlyRun);
+    expect(lastSync(late)).toBe(DAY);
+
+    clock = DAY + resyncSlot(late) + 1;
+    expect(await tick()).toBe(1);
+    expect(lastSync(early)).toBe(earlyRun);
+    expect(lastSync(late)).toBe(clock);
+  });
+
+  it("leaves repositories that are not ready, skipped, suspended or inactive alone", async () => {
+    addInstallation(1);
+    addInstallation(2, true);
+    addInstallation(3);
+    active.delete(3);
+    const states = [
+      ["R_1", 1, "ready"],
+      ["R_2", 1, "pending"],
+      ["R_3", 1, "skipped"],
+      ["R_4", 2, "ready"],
+      ["R_5", 3, "ready"],
+    ] as const;
+    for (const [id, installation, state] of states) {
+      addRepo(
+        { name: `acme/${id.toLowerCase()}`, id, issues: [] },
+        installation,
+        state,
+      );
+      setLastSync(id, 1);
+    }
+    expect(await tick({ users: [], orgs: ["acct-1", "acct-2"] })).toBe(1);
+    expect(lastSync("R_1")).toBe(clock);
+    for (const id of ["R_2", "R_3", "R_4", "R_5"]) expect(lastSync(id)).toBe(1);
+  });
+
+  it("tries a repository whose last sync failed again at its next slot, not at every check", async () => {
+    addInstallation(1);
+    addRepo({ name: "acme/web", id: "R_1", issues: [] }, 1, "error");
+    const slot = resyncSlot("R_1");
+    database.db
+      .update(schema.repos)
+      .set({ updatedAt: DAY + slot + 1 })
+      .run();
+    clock = DAY + slot + DAY_MS - 1;
+    expect(await tick()).toBe(0);
+    expect(repoRow("R_1")?.syncState).toBe("error");
+    clock = DAY + slot + DAY_MS;
+    expect(await tick()).toBe(1);
+    expect(repoRow("R_1")?.syncState).toBe("ready");
+  });
+
+  it("removes what the resync no longer finds, picks up relation changes and prunes the refs nothing references", async () => {
+    addInstallation(1);
+    const blocker = (number: number): FakeRef => ({
+      id: `I_${String(number)}`,
+      repo: "acme/web",
+      number,
+    });
+    addRepo(
+      {
+        name: "acme/web",
+        id: "R_1",
+        issues: [
+          issue(1, { blockedBy: [blocker(7)], parent: blocker(8) }),
+          issue(2),
+        ],
+      },
+      1,
+      "ready",
+    );
+    setLastSync("R_1", 1);
+    const issueRow = (number: number) => ({
+      id: `I_${String(number)}`,
+      databaseId: number,
+      repoId: "R_1",
+      number,
+      title: `Issue ${String(number)}`,
+      url: `https://github.test/acme/web/issues/${String(number)}`,
+      subTotal: 0,
+      subCompleted: 0,
+      blockedByTotal: 0,
+      blockingTotal: 0,
+      createdAt: 1,
+      updatedAt: 1,
+      syncedAt: 1,
+    });
+    // 1 was blocked by 5 and 2 by 6; 3 was deleted on GitHub without a webhook
+    database.db
+      .insert(schema.issues)
+      .values([issueRow(1), issueRow(2), issueRow(3)])
+      .run();
+    database.db
+      .insert(schema.issueRefs)
+      .values(
+        [1, 2, 3, 4, 5, 6].map((number) => ({
+          id: `I_${String(number)}`,
+          repoFullName: "acme/web",
+          number,
+          title: `Issue ${String(number)}`,
+          state: "OPEN" as const,
+          url: `https://github.test/acme/web/issues/${String(number)}`,
+          seenAt: 1,
+        })),
+      )
+      .run();
+    database.db
+      .insert(schema.issueDeps)
+      .values([
+        { blockedId: "I_1", blockingId: "I_5" },
+        { blockedId: "I_2", blockingId: "I_6" },
+        { blockedId: "I_3", blockingId: "I_6" },
+      ])
+      .run();
+
+    await tick();
+
+    expect(repoRow("R_1")?.syncState).toBe("ready");
+    expect(issueRows().map((row) => row.id)).toEqual(["I_1", "I_2"]);
+    expect(
+      database.db
+        .select({
+          blocked: schema.issueDeps.blockedId,
+          blocking: schema.issueDeps.blockingId,
+        })
+        .from(schema.issueDeps)
+        .all(),
+    ).toEqual([{ blocked: "I_1", blocking: "I_7" }]);
+    // 1 and 7 are on an edge, 8 is 1's parent; 2, 3, 4, 5 and 6 are unreferenced
+    expect(refIds()).toEqual(["I_1", "I_7", "I_8"]);
+  });
+
+  it("schedules the check every 15 minutes through the jobs interface", () => {
+    const jobs = createJobs({ logger: createLogger("silent") });
+    registerResyncJob(jobs, database.db, ORGS);
+    expect(RESYNC_INTERVAL_MS).toBe(15 * 60 * 1000);
+    expect(() => jobs.schedule(RESYNC_JOB, 1000)).toThrow(/already scheduled/);
   });
 });
