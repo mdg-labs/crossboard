@@ -100,8 +100,25 @@ export const issuesQuery = (q: string, sort: Sort) =>
     },
   });
 
+/**
+ * The loaded pages as one list. Pages are fetched by offset, so an issue that
+ * moves in the sort order between two requests comes back twice; only its
+ * first occurrence is kept, so every row has a unique key.
+ */
 export function loadedIssues(
   data: InfiniteData<IssueList> | undefined,
 ): IssueItem[] {
-  return data === undefined ? [] : data.pages.flatMap((page) => page.items);
+  if (data === undefined) {
+    return [];
+  }
+  const seen = new Set<IssueItem["id"]>();
+  return data.pages
+    .flatMap((page) => page.items)
+    .filter((item) => {
+      if (seen.has(item.id)) {
+        return false;
+      }
+      seen.add(item.id);
+      return true;
+    });
 }
