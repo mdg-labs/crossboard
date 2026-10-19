@@ -13,6 +13,17 @@ existing line by adding its PR number.
 ## Runtime and packaging
 
 - **Process lifecycle** — a server that runs as the container's PID 1 registers no SIGTERM/SIGINT handler, so a stop is a SIGKILL after the grace period with requests undrained and the database left open — PR 68
+- **Process lifecycle** — shutdown deadlines chained one after another (a job grace timer started only once the connection drain ends), so the total stop time reaches the orchestrator's SIGKILL — PR 76
+
+## Auth and tokens
+
+- **Over-broad error class** — a destructive step (deleting a user's tokens and sessions) taken on any 4xx instead of the one upstream error code that means the credential is dead, so a misconfigured secret or a rate limit signs users out — PR 76
+
+## CI and packaging
+
+- **Moving tag regression** — a moving image tag (`nightly`) pushed from a run without checking the run's commit is still the branch tip, so a re-run of an older run moves the tag back — PR 76
+- **Lost diagnostics** — a test-harness container started with `--rm`, so one that crashes at startup is gone before its logs are read — PR 76
+- **Unpinned coupled version** — a dependency whose version must equal one pinned elsewhere in CI (the Playwright client vs the `run-server` image) declared with a range, so a lockfile refresh breaks every run — PR 76
 
 ## Threat model
 
