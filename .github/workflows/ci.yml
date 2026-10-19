@@ -1,6 +1,6 @@
 name: CI
 
-# Runs on the self-hosted runner, so it takes no secret and no write
+# Runs on a GitHub-hosted runner and takes no secret and no write
 # permission: the token is read-only and this workflow publishes nothing
 # (publishing belongs to the release workflow on a version tag and the nightly
 # workflow on a push to `main`, THREAT_MODEL T15, SPEC D-23). It must stay on
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   gate:
-    runs-on: [self-hosted, runners01]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       IMAGE: crossboard:ci-${{ github.run_id }}-${{ github.run_attempt }}
@@ -63,8 +63,8 @@ jobs:
       # interface exactly as a host browser would. The container gets no Docker
       # socket, no secret and no extra privilege, and runs as the image's
       # unprivileged user. `run-server` binds a port the OS picks (`--port 0`),
-      # because runs that overlap on this host share its loopback interface; the
-      # step reads the bound endpoint from the line `run-server` logs once it is
+      # so the step does not assume any fixed port is free on the runner; it
+      # reads the bound endpoint from the line `run-server` logs once it is
       # listening and hands it to the next steps. A container that exits first
       # fails the job.
       - name: Start the Playwright browser server

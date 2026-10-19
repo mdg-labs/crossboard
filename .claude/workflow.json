@@ -2,7 +2,7 @@
   "$schema": "./workflow.schema.json",
   "repo": "mdg-labs/crossboard",
   "maintainer": "mdguggenbichler",
-  "githubRunner": "[self-hosted, runners01]",
+  "githubRunner": "ubuntu-latest",
   "tracker": {
     "type": "github"
   },
@@ -86,7 +86,6 @@
   "threatModel": null,
   "act": {
     "platforms": {
-      "runners01": "catthehacker/ubuntu:act-24.04",
       "ubuntu-latest": "catthehacker/ubuntu:act-24.04"
     },
     "neverRun": [

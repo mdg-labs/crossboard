@@ -177,6 +177,8 @@ Synced issues and boards are not encrypted with it and stay as they are.
 
 This is a pnpm workspace with `apps/server` (Hono and SQLite through Drizzle), `apps/web` (React and Vite) and `packages/query` (the filter language). `pnpm gate` runs lint, typecheck, tests, build and the format check. [`docs/SPEC.md`](docs/SPEC.md) is the product and technical specification and [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) the threat model.
 
+CI runs on GitHub-hosted runners and relies on two repository settings (Settings, Actions, General): fork pull request workflows require approval for all external contributors, and workflow runs from forks get no secrets and a read-only token.
+
 ## License
 
 [MIT](LICENSE)

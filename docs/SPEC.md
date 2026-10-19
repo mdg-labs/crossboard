@@ -364,7 +364,7 @@ Configuration comes only from environment variables, validated at startup; an in
 - `apps/server`: unit tests for placement and nesting, sanitizer, encryption and config; integration tests against a temporary SQLite file with `msw` faking GitHub for sync, webhooks (signed fixtures), reconciliation, access computation and every API route, including the cross-user isolation tests of §9.1.
 - `apps/web`: component tests (Vitest + Testing Library) for the list's keyboard navigation, the loading/empty/error states of each view, "Show N more" on board columns, filter error underlining and the dependency graph's layout limits.
 - `e2e/`: a small fake GitHub server (OAuth, REST, GraphQL from fixtures) and Playwright smoke tests: sign in, list and filter, open detail, create a board, see placement.
-- CI (`.github/workflows/ci.yml`, self-hosted `runners01`): on pushes to `dev` and `main` and on pull requests: install, `pnpm gate`, Docker build, Playwright against the built image. The nightly workflow (`.github/workflows/nightly.yml`, D-23) runs on pushes to `main`: `pnpm gate`, then it builds and pushes the nightly image.
+- CI (`.github/workflows/ci.yml`, GitHub-hosted `ubuntu-latest`, D-24): on pushes to `dev` and `main` and on pull requests: install, `pnpm gate`, Docker build, Playwright against the built image. The nightly workflow (`.github/workflows/nightly.yml`, D-23) runs on pushes to `main`: `pnpm gate`, then it builds and pushes the nightly image.
 
 ## 8. Data model
 
@@ -536,6 +536,7 @@ M4 depends only on M1 and can run in parallel with M2 and M3.
 - **D-21 Board repo picker:** boards get a repo picker that edits the ad-hoc filter's `repo:` term, defaulting to all repos (FR-34); it is not saved with the board, since a board's base filter can already hold `repo:` terms. (2026-10-18)
 - **D-22 Detail panel and filter error:** the detail Drawer is non-modal, so `j`/`k`, `/` and clicks keep working on the list or board behind it; if coss's Drawer cannot be non-modal, that is a §14 question, not a hand-built panel. The filter's error range (FR-18) is underlined by a text layer mirrored behind the Input Group, the third hand-built UI element. (2026-10-18)
 - **D-23 Nightly image:** every push to `main` runs `.github/workflows/nightly.yml`, which runs `pnpm gate` and then builds the image for `linux/amd64` only and pushes `ghcr.io/mdg-labs/crossboard:<short sha>` (the first 7 characters of the commit SHA) and the moving `:nightly`. D-16 stays the only source of `:<version>` and `:latest`. (2026-10-19)
+- **D-24 GitHub-hosted runners only:** every workflow (`ci.yml`, `nightly.yml`, `release.yml`, `issue-status.yml`) runs on GitHub-hosted runners, and pull-request code, forks included, never runs on a self-hosted runner. Fork pull-request CI therefore runs on a throwaway VM that shares no Docker daemon, image cache or workspace with the job that publishes the nightly image. The CI job `gate` runs on every `pull_request` with no fork exclusion, so a ruleset on `main` can require it. (2026-10-19)
 
 ## 14. Open questions
 New questions are added here with a recommended default and resolved into §13.
