@@ -13,7 +13,7 @@ Crossboard is a self-hostable web app that shows every open GitHub issue across 
 
 ### Design docs
 
-`docs/SPEC.md` is the single source of truth: product scope, functional requirements (FR-n), GitHub integration, rate-limit strategy, architecture and repository layout (§7.2), HTTP API (§7.4), configuration (§7.5), data model (§8), milestones (M1–M9). Settled decisions are numbered D-n in its §13 with a date; open questions go to §14 with a recommended default. §5.5 lists GitHub behaviour that is not yet confirmed and the fallback to use until it is. When code and spec disagree, the spec wins until a decision changes it — change the spec in the same commit as the code, never silently diverge. Cite requirements as `SPEC FR-30` or `SPEC §6.2`, decisions as `D-4`.
+`docs/SPEC.md` is the single source of truth: product scope, functional requirements (FR-n), GitHub integration, rate-limit strategy, architecture and repository layout (§7.2), HTTP API (§7.4), configuration (§7.5), data model (§8), milestones (M1–M9). Settled decisions are numbered D-n in its §13 with a date; open questions go to §14 with a recommended default. §5.5 records GitHub behaviour the docs do not state, as measured by the spike, and the fallback the implementation uses for each. When code and spec disagree, the spec wins until a decision changes it — change the spec in the same commit as the code, never silently diverge. Cite requirements as `SPEC FR-30` or `SPEC §6.2`, decisions as `D-4`.
 
 ### Area → paths
 

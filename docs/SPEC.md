@@ -201,19 +201,19 @@ When a connection's `totalCount` exceeds the page, follow-up queries page that c
 ### 5.4 Issue type colors
 GitHub returns issue-type colors as an enum. The web app maps them to fixed hex values (Primer): `GRAY #6e7781`, `BLUE #0969da`, `GREEN #1a7f37`, `YELLOW #9a6700`, `ORANGE #bc4c00`, `RED #d1242f`, `PINK #bf3989`, `PURPLE #8250df`. An unknown value renders as GRAY. Issue types are an organization feature; issues in personal repos have no type and show none.
 
-### 5.5 GitHub behaviour to confirm before building on it
-These are not stated by GitHub's documentation. Early in M3, once the maintainer's instance exists (D-15), the maintainer runs a spike (it needs a real installation) that checks each against real deliveries and queries and records the results in this section. It does not block other work: until a row is confirmed, the implementation uses its fallback.
+### 5.5 GitHub behaviour confirmed by measurement
+These are not stated by GitHub's documentation. The spike (D-15) checked each against real GraphQL queries under the App's installation token and real webhook deliveries on 2026-10-19, using throwaway private repos in an organization and a user account. Every fallback holds; the implementation keeps using them. The one new finding (dependency summaries lag the lists) is Q-1 in §14.
 
-| Behaviour | Fallback until confirmed |
-|---|---|
-| GraphQL dependency and sub-issue fields need no preview header | Send no header; the spike confirms |
-| Fields carried by `issues` webhook payloads (type, sub-issue and dependency summaries) | Never read them: every relevant webhook triggers a GraphQL refetch (§6.2) |
-| Whether a transferred issue keeps its node id | Treat as delete in the source repo + new issue in the destination |
-| Whether `blockedBy`/`blocking` omit issues the installation can't read, and whether the summary totals include them | Compute "not accessible" as total minus readable entries (FR-24) |
-| Whether adding or removing a dependency or sub-issue changes `updatedAt` | Assume it does not: the daily full resync (§6.3) is the safety net |
-| Whether `totalBlockedBy`/`totalBlocking` include closed issues | Assume they do (closed relations stay in `issue_deps` with state `CLOSED`, so FR-24's subtraction stays consistent) |
-| Actions of `github_app_authorization` | Act on every delivery of that event (FR-7) |
-| Issue types on user-owned repos | `issueType` may be null anywhere |
+| Behaviour | Fallback | Result (2026-10-19) |
+|---|---|---|
+| GraphQL dependency and sub-issue fields need no preview header | Send no header | **Confirmed.** `blockedBy`, `blocking`, `issueDependenciesSummary { blockedBy totalBlockedBy blocking totalBlocking }`, `subIssues`, `subIssuesSummary`, `parent` and `issueType` all resolve under an installation token with no preview header |
+| Fields carried by `issues` webhook payloads (type, sub-issue and dependency summaries) | Never read them: every relevant webhook triggers a GraphQL refetch (§6.2) | **Fallback holds.** `issues` payloads carry `issue.type`, `issue.sub_issues_summary` and `issue.issue_dependencies_summary`; setting a type also sends `issues` `typed`. The dependency summary in an `issue_dependencies` payload can still read 0 right after the change (see Q-1), so payloads stay unread |
+| Whether a transferred issue keeps its node id | Treat as delete in the source repo + new issue in the destination | **Fallback holds: it does not.** The destination issue gets a new node id and number; the old node id stops resolving. The source repo receives `issues` `transferred` with `changes.new_issue` and `changes.new_repository`; the destination receives `issues` `opened` |
+| Whether `blockedBy`/`blocking` omit issues the installation can't read, and whether the summary totals include them | Compute "not accessible" as `max(0, total − readable)` (FR-24) | **Confirmed.** For a blocker in a repo the installation can't read, `blockedBy` omits it (its `totalCount` is 0 too), while `totalBlockedBy` counts it |
+| Whether adding or removing a dependency or sub-issue changes `updatedAt` | Assume it does not: the daily full resync (§6.3) is the safety net | **Confirmed: it does not**, on either side, for adding or removing a same-repo or cross-repo dependency or a sub-issue. Closing a blocker does not change the blocked issue's `updatedAt` either |
+| Whether `totalBlockedBy`/`totalBlocking` include closed issues | Assume they do (closed relations stay in `issue_deps` with state `CLOSED`, so FR-24's subtraction stays consistent) | **Confirmed.** With one open and one closed blocker: `blockedBy` 1 (open only), `totalBlockedBy` 2; the `blockedBy` connection lists both |
+| Actions of `github_app_authorization` | Act on every delivery of that event (FR-7) | **Fallback holds.** Revoking the authorization delivers action `revoked`. The payload has only `action` and `sender` (no `installation`), so the user is identified by `sender.id` |
+| Issue types on user-owned repos | `issueType` may be null anywhere | **Confirmed.** A user-owned repo has no issue types (`repository.issueTypes` is null), so `issueType` is always null there |
 
 ## 6. Rate limiting strategy
 
@@ -537,4 +537,6 @@ M4 depends only on M1 and can run in parallel with M2 and M3.
 - **D-23 Nightly image:** every push to `main` runs `.github/workflows/nightly.yml`, which runs `pnpm gate` and then builds the image for `linux/amd64` only and pushes `ghcr.io/mdg-labs/crossboard:<short sha>` (the first 7 characters of the commit SHA) and the moving `:nightly`. D-16 stays the only source of `:<version>` and `:latest`. (2026-10-19)
 
 ## 14. Open questions
-None. New questions are added here with a recommended default and resolved into §13.
+New questions are added here with a recommended default and resolved into §13.
+
+- **Q-1 Dependency summaries lag the lists.** After a dependency is added or a blocker closes, `issueDependenciesSummary` (and the payload's `issue_dependencies_summary`) can still show the old totals for up to about 30 s, while `blockedBy`/`blocking` are current at once (§5.5, 2026-10-19). A refetch triggered by the `issue_dependencies` webhook can therefore store a stale `blocked_by_total`/`blocking_total`, so FR-24's "+N not accessible" stays wrong until the next refetch (at worst the daily resync, §6.3). **Recommended default:** an `issue_dependencies` delivery enqueues, besides the immediate refetch, a second refetch of the same issues 60 s later through the jobs interface. (2026-10-19)
