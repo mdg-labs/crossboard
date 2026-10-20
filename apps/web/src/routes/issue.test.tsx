@@ -9,12 +9,18 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/app";
-import { details, relation, summary } from "@/components/detail/test-data";
+import {
+  details,
+  relation,
+  subIssue,
+  summary,
+} from "@/components/detail/test-data";
 import type { IssueItem } from "@/lib/issues";
 import { createQueryClient } from "@/lib/query-client";
 import { createAppRouter } from "@/router";
 
 beforeEach(() => {
+  window.localStorage.clear();
   vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(600);
   vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1280);
 });
@@ -75,14 +81,35 @@ function stubServer() {
       const n = Number(match[1]);
       if (match[2] !== undefined) {
         return Response.json(
-          details({ bodyHtml: `<p>Body of issue ${String(n)}</p>` }),
+          details({
+            bodyHtml: `<p>Body of issue ${String(n)}</p>`,
+            subIssues:
+              n === 2
+                ? {
+                    total: 1,
+                    notAccessible: 0,
+                    items: [
+                      subIssue(20, {
+                        subIssues: { total: 1, completed: 0 },
+                        children: [subIssue(21)],
+                      }),
+                    ],
+                  }
+                : { total: 0, notAccessible: 0, items: [] },
+          }),
         );
       }
       return Response.json(
         summary({
           id: `issue-${String(n)}`,
           number: n,
+          url: `https://github.com/acme/widgets/issues/${String(n)}`,
           title: `Issue number ${String(n)}`,
+          subIssues: { total: n === 2 ? 1 : 0, completed: 0 },
+          ancestors: [
+            relation(8, { title: "Child" }),
+            relation(9, { title: "Epic", synced: false }),
+          ],
           blockedBy: {
             open: 1,
             notAccessible: 0,
@@ -121,7 +148,10 @@ describe("the detail panel over the list", () => {
 
     expect(await screen.findByText("Body of issue 1")).toBeTruthy();
     expect(panel()).not.toBeNull();
-    expect(panel()?.getAttribute("aria-label")).toBe("Issue detail");
+    const labelledBy = panel()?.getAttribute("aria-labelledby") ?? "";
+    expect(document.getElementById(labelledBy)?.textContent).toBe(
+      "acme/widgets#1",
+    );
     // Non-modal: nothing behind it is hidden from the accessibility tree.
     expect(row("Issue number 2").closest("[aria-hidden]")).toBeNull();
     expect(document.body.style.overflow).not.toBe("hidden");
@@ -184,6 +214,235 @@ describe("the detail panel over the list", () => {
   });
 });
 
+const header = () =>
+  panel()?.querySelector("[data-slot=drawer-header]") as HTMLElement;
+const expandToggle = () =>
+  within(header()).getByRole("button", { name: "Full screen" });
+
+async function openPanel() {
+  stubServer();
+  renderAt("/");
+  fireEvent.click(await screen.findByText("Issue number 1"));
+  await screen.findByText("Body of issue 1");
+}
+
+function hover(element: HTMLElement) {
+  fireEvent.pointerEnter(element);
+  fireEvent.mouseEnter(element);
+  fireEvent.pointerMove(element);
+  fireEvent.mouseMove(element);
+}
+
+describe("the detail panel header", () => {
+  it("holds the ref, the ancestor breadcrumb, Open on GitHub, the toggle and Close in one row", async () => {
+    await openPanel();
+
+    const row = header();
+    expect(row.textContent).toContain("acme/widgets#1");
+    const crumbs = within(
+      within(row).getByRole("navigation", { name: "Ancestors" }),
+    ).getAllByRole("link");
+    expect(crumbs.map((crumb) => crumb.textContent)).toEqual([
+      "acme/widgets#9",
+      "acme/widgets#8",
+    ]);
+    expect(crumbs[0]?.getAttribute("href")).toBe(
+      "https://github.com/acme/widgets/issues/9",
+    );
+    expect(crumbs[1]?.getAttribute("href")).toBe("/i/acme/widgets/8");
+    expect(row.textContent).not.toContain("Sub-issue of");
+    const list = row.querySelector("[data-slot=breadcrumb-list]");
+    expect(list?.tagName).toBe("OL");
+    expect(
+      Array.from(list?.children ?? []).map((child) =>
+        child.getAttribute("data-slot"),
+      ),
+    ).toEqual(["breadcrumb-item", "breadcrumb-separator", "breadcrumb-item"]);
+    expect(list?.querySelector("li li")).toBeNull();
+    expect(
+      within(row)
+        .getByRole("link", { name: "Open on GitHub" })
+        .getAttribute("href"),
+    ).toBe("https://github.com/acme/widgets/issues/1");
+    expect(within(row).getByRole("button", { name: "Close" })).toBeTruthy();
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("false");
+    expect(row.querySelector("[data-slot=drawer-title]")?.textContent).toBe(
+      "acme/widgets#1",
+    );
+  });
+
+  it("opens a synced ancestor of the breadcrumb in the same panel", async () => {
+    await openPanel();
+
+    fireEvent.click(
+      within(header()).getByRole("link", { name: "acme/widgets#8" }),
+    );
+
+    expect(await screen.findByText("Body of issue 8")).toBeTruthy();
+    expect(screen.queryByText("Body of issue 1")).toBeNull();
+  });
+
+  it("has a single Close button, in the header and not overlaid on the panel", async () => {
+    await openPanel();
+
+    const closes = within(panel() as HTMLElement).getAllByRole("button", {
+      name: "Close",
+    });
+    expect(closes).toHaveLength(1);
+    expect(header().contains(closes[0] as HTMLElement)).toBe(true);
+    expect(closes[0]?.className.split(" ")).not.toContain("absolute");
+  });
+
+  it("keeps the header outside the scrolling panel", async () => {
+    await openPanel();
+
+    expect(header().closest("[data-slot=drawer-panel]")).toBeNull();
+    expect(
+      (panel() as HTMLElement).querySelector("[data-slot=drawer-panel]"),
+    ).not.toBeNull();
+  });
+
+  it("closes the panel from the Close button", async () => {
+    await openPanel();
+
+    fireEvent.click(within(header()).getByRole("button", { name: "Close" }));
+
+    await waitFor(() => {
+      expect(panel()).toBeNull();
+    });
+  });
+
+  it("names the toggle in a tooltip for each state", async () => {
+    await openPanel();
+    const tooltip = () =>
+      document.querySelector("[data-slot=tooltip-popup]")?.textContent;
+
+    hover(expandToggle());
+    await waitFor(() => expect(tooltip()).toBe("Full screen"), {
+      timeout: 3000,
+    });
+
+    fireEvent.click(expandToggle());
+    await waitFor(() => expect(tooltip()).toBeUndefined());
+    hover(expandToggle());
+    await waitFor(() => expect(tooltip()).toBe("Exit full screen"), {
+      timeout: 3000,
+    });
+  });
+});
+
+describe("the full-screen detail panel", () => {
+  const popupClass = () => (panel() as HTMLElement).className;
+  const rail = () =>
+    within(panel() as HTMLElement).getByRole("complementary", {
+      name: "Properties",
+    });
+
+  it("starts as a side panel with the fields above the sections", async () => {
+    await openPanel();
+
+    expect(popupClass()).toContain("max-w-2xl");
+    expect(popupClass()).not.toContain("max-w-none");
+    expect(rail().className).not.toContain("lg:col-start-2");
+  });
+
+  it("widens to the viewport with a properties rail, and back", async () => {
+    await openPanel();
+
+    fireEvent.click(expandToggle());
+
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(popupClass()).toContain("max-w-none");
+    expect(popupClass()).not.toContain("max-w-2xl");
+    expect(rail().className).toContain("lg:col-start-2");
+    expect(within(rail()).getByText("Repository")).toBeTruthy();
+    expect(window.localStorage.getItem("crossboard:detail:expanded")).toBe(
+      "true",
+    );
+
+    fireEvent.click(expandToggle());
+
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("false");
+    expect(popupClass()).toContain("max-w-2xl");
+    expect(rail().className).not.toContain("lg:col-start-2");
+    expect(window.localStorage.getItem("crossboard:detail:expanded")).toBe(
+      "false",
+    );
+  });
+
+  it("reopens full screen after a reload", async () => {
+    window.localStorage.setItem("crossboard:detail:expanded", "true");
+    await openPanel();
+
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(popupClass()).toContain("max-w-none");
+  });
+
+  it("falls back to the side panel when storage throws, and still toggles", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    await openPanel();
+
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("false");
+    expect(popupClass()).toContain("max-w-2xl");
+    fireEvent.click(expandToggle());
+    expect(expandToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(popupClass()).toContain("max-w-none");
+  });
+
+  it("keeps j and k on the list and Esc closing the panel", async () => {
+    window.localStorage.setItem("crossboard:detail:expanded", "true");
+    await openPanel();
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(await screen.findByText("Body of issue 2")).toBeTruthy();
+    fireEvent.keyDown(document.body, { key: "k" });
+    expect(await screen.findByText("Body of issue 1")).toBeTruthy();
+    expect(popupClass()).toContain("max-w-none");
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => {
+      expect(panel()).toBeNull();
+    });
+  });
+
+  it("shows the loading state in full screen", async () => {
+    window.localStorage.setItem("crossboard:detail:expanded", "true");
+    const stub = stubServer();
+    stub.mockImplementation(async (input: RequestInfo | URL) => {
+      const raw =
+        typeof input === "string" || input instanceof URL ? input : input.url;
+      const { pathname } = new URL(raw, window.location.origin);
+      if (pathname === "/api/me") {
+        return Response.json({
+          user: { login: "octocat", name: null, avatarUrl: "" },
+          installations: [],
+          installUrl: "https://github.com/apps/crossboard/installations/new",
+        });
+      }
+      if (pathname === "/api/issues") {
+        return Response.json({ items: [item(1)], total: 1, warnings: [] });
+      }
+      return new Promise<Response>(() => undefined);
+    });
+    renderAt("/");
+
+    fireEvent.click(await screen.findByText("Issue number 1"));
+
+    expect(
+      await screen.findByRole("status", { name: "Loading issue" }),
+    ).toBeTruthy();
+    expect(popupClass()).toContain("max-w-none");
+    expect(
+      within(header()).getByRole("button", { name: "Close" }),
+    ).toBeTruthy();
+  });
+});
+
 describe("the route /i/:owner/:repo/:number", () => {
   it("shows the same detail full-page, with no Drawer", async () => {
     stubServer();
@@ -194,6 +453,55 @@ describe("the route /i/:owner/:repo/:number", () => {
     ).toBeTruthy();
     expect(await screen.findByText("Body of issue 2")).toBeTruthy();
     expect(panel()).toBeNull();
+  });
+
+  it("uses the two-column layout and a header with Open on GitHub", async () => {
+    stubServer();
+    renderAt("/i/acme/widgets/2");
+
+    const rail = await screen.findByRole("complementary", {
+      name: "Properties",
+    });
+    expect(rail.className).toContain("lg:col-start-2");
+    expect(
+      screen.getByRole("link", { name: "Open on GitHub" }).getAttribute("href"),
+    ).toBe("https://github.com/acme/widgets/issues/2");
+    expect(screen.queryByRole("button", { name: "Close" })).toBeNull();
+  });
+
+  it("opens a synced ancestor of the breadcrumb as its own route", async () => {
+    stubServer();
+    const { history } = renderAt("/i/acme/widgets/2");
+
+    const crumbs = await screen.findByRole("navigation", {
+      name: "Ancestors",
+    });
+    fireEvent.click(
+      within(crumbs).getByRole("link", { name: "acme/widgets#8" }),
+    );
+
+    await waitFor(() => {
+      expect(history.location.pathname).toBe("/i/acme/widgets/8");
+    });
+    expect(await screen.findByText("Body of issue 8")).toBeTruthy();
+  });
+
+  it("expands a sub-issue to its own sub-issues and opens a synced one", async () => {
+    stubServer();
+    const { history } = renderAt("/i/acme/widgets/2");
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Sub-issues of acme/widgets#20",
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("link", { name: "acme/widgets#21" }),
+    );
+
+    await waitFor(() => {
+      expect(history.location.pathname).toBe("/i/acme/widgets/21");
+    });
   });
 
   it("opens a synced dependency as its own route", async () => {

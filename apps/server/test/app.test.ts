@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { hc } from "hono/client";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createErrorHandler, notFound } from "../src/api/errors.js";
 import { validate } from "../src/api/validator.js";
@@ -252,9 +252,16 @@ describe("static SPA serving", () => {
   });
 
   it("answers 404 in the error shape when the web app was not built", async () => {
-    const response = await build(join(dir, "missing")).request("/settings", {
-      headers: member(),
-    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let response: Response;
+    try {
+      response = await build(join(dir, "missing")).request("/settings", {
+        headers: member(),
+      });
+      expect(logged.mock.calls).toEqual([]);
+    } finally {
+      logged.mockRestore();
+    }
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },

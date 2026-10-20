@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  nestCards,
-  OTHER,
-  placeIssues,
-  type CardOf,
-  type Slot,
-} from "../src/boards/index.js";
+import { OTHER, placeIssues, type Slot } from "../src/boards/index.js";
+import { nestCards, type CardOf } from "../src/issues/index.js";
 
 interface Node {
   id: string;

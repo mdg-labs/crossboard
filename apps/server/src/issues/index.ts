@@ -12,5 +12,11 @@ export {
   type AccessibleIssue,
   type IssueLocator,
 } from "./filterable.js";
+export {
+  nestCards,
+  type CardOf,
+  type NestableIssue,
+  type NestOptions,
+} from "./nesting.js";
 export { sortIssues } from "./sort.js";
 export { loadIssueSummary } from "./summary.js";

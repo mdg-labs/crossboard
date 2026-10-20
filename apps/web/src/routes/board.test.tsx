@@ -353,6 +353,147 @@ describe("nested sub-issues", () => {
   });
 });
 
+describe("the parent of a card", () => {
+  const parentOf = { owner: "acme", repo: "widgets", number: 5 };
+
+  it("is named below the title of an expanded-mode card, and opens its detail", async () => {
+    stubServer({
+      board: Response.json(board({ subIssueMode: "expanded" })),
+      cards: () =>
+        Response.json(
+          cardsOf([card(1, { title: "Child", parent: parentOf }), card(2)], []),
+        ),
+    });
+    renderAt("/b/7");
+
+    const child = (await screen.findByText("Child")).closest(
+      "[data-issue-id]",
+    ) as HTMLElement;
+    const hint = within(child).getByRole("button", { name: /acme\/widgets#5/ });
+    expect(hint.textContent).toContain("↳");
+    const other = screen
+      .getByText("Issue number 2")
+      .closest("[data-issue-id]") as HTMLElement;
+    expect(within(other).queryByText(/↳/)).toBeNull();
+
+    fireEvent.click(hint);
+    expect(
+      await screen.findByRole("heading", { name: "Issue number 5" }),
+    ).toBeTruthy();
+  });
+
+  it("is left off a collapsed-mode card, which nests under its parent", async () => {
+    stubServer({
+      cards: () =>
+        Response.json(
+          cardsOf(
+            [card(1, { title: "Child", parent: parentOf, children: [] })],
+            [],
+          ),
+        ),
+    });
+    renderAt("/b/7");
+
+    const child = (await screen.findByText("Child")).closest(
+      "[data-issue-id]",
+    ) as HTMLElement;
+    expect(within(child).queryByText(/↳/)).toBeNull();
+  });
+});
+
+describe("blocked cards and surfaces", () => {
+  const blockedCard = () =>
+    card(1, {
+      title: "Stuck",
+      isBlocked: true,
+      blockedBy: { open: 1, notAccessible: 1 },
+      type: { name: "Bug", color: "RED" },
+      labels: [{ name: "urgent", color: "d73a4a" }],
+    });
+  const cardOf = (title: string) =>
+    screen.getByText(title).closest("[data-issue-id]") as HTMLElement;
+
+  it("marks a blocked card in its header row and leads its badges with the blocked one", async () => {
+    stubServer({
+      cards: () =>
+        Response.json(cardsOf([blockedCard(), card(2, { title: "Free" })], [])),
+    });
+    renderAt("/b/7");
+    await screen.findByText("Stuck");
+
+    const element = cardOf("Stuck");
+    expect(element.getAttribute("data-blocked")).toBe("true");
+    const header = element.querySelector("p") as HTMLElement;
+    const marker = within(element).getByRole("img", { name: "Blocked by 2" });
+    expect(marker.parentElement).toBe(header.parentElement);
+    expect(element.className).toContain("data-blocked:shadow-");
+    const badges = [
+      ...(within(element).getByText("blocked").parentElement?.children ?? []),
+    ].map((badge) => badge.textContent);
+    expect(badges).toEqual(["blocked", "Bug", "urgent"]);
+
+    const free = cardOf("Free");
+    expect(free.hasAttribute("data-blocked")).toBe(false);
+    expect(within(free).queryByRole("img")).toBeNull();
+    expect(within(free).queryByText("blocked")).toBeNull();
+  });
+
+  it("marks a nested blocked card and keeps its column tag after the blocked badge", async () => {
+    stubServer({
+      cards: () =>
+        Response.json(
+          cardsOf(
+            [
+              card(1, {
+                title: "Parent",
+                subIssues: { total: 1, completed: 0 },
+                children: [
+                  {
+                    ...blockedCard(),
+                    title: "Nested",
+                    columnName: "Doing",
+                    children: [],
+                  },
+                ],
+              }),
+            ],
+            [],
+          ),
+        ),
+    });
+    window.localStorage.setItem("crossboard:board:7:expanded", '["issue-1"]');
+    renderAt("/b/7");
+    await screen.findByText("Nested");
+
+    const badges = [
+      ...(within(cardOf("Nested")).getByText("blocked").parentElement
+        ?.children ?? []),
+    ].map((badge) => badge.textContent);
+    expect(badges.slice(0, 2)).toEqual(["blocked", "Doing"]);
+  });
+
+  it("stands the cards off their column: the column has no card surface", async () => {
+    stubServer();
+    renderAt("/b/7");
+    await screen.findByText("Issue number 1");
+
+    const lane = column("To do");
+    expect(lane.className).toContain("bg-muted");
+    expect(lane.className).not.toContain("bg-card");
+    expect(lane.className).not.toMatch(/(^|\s)border(\s|$)/);
+    expect(lane.className).not.toContain("rounded-2xl");
+    const surface = cardOf("Issue number 1");
+    expect(surface.getAttribute("data-slot")).toBe("card");
+    expect(surface.className).toContain("bg-card");
+    expect(surface.className).toContain("rounded-2xl");
+    expect(surface.className).toContain("hover:border-foreground/30");
+    expect(lane.contains(lane.querySelector("header"))).toBe(true);
+    expect(
+      lane.querySelector("header")?.closest("[data-slot=scroll-area-viewport]"),
+    ).toBeNull();
+  });
+});
+
 describe("a long column", () => {
   const many = (count: number) =>
     Array.from({ length: count }, (_, index) => card(index + 1));

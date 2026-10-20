@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
@@ -119,21 +120,29 @@ export function createApp(options: AppOptions) {
     );
 
   app.all("/api/*", notFound);
-  // Directory requests and /index.html would serve the shell without the
-  // session check below.
-  const staticFiles = serveStatic({ root: options.webRoot });
-  app.use((c, next) =>
-    c.req.path.endsWith("/") || c.req.path === "/index.html"
-      ? next()
-      : staticFiles(c, next),
-  );
+  // Without a built web app serveStatic is not mounted, since it logs a
+  // warning for the missing root each time it is created; the requests fall
+  // through to the error-shape 404 below.
+  const hasWebApp = existsSync(join(options.webRoot, "index.html"));
+  if (hasWebApp) {
+    // Directory requests and /index.html would serve the shell without the
+    // session check below.
+    const staticFiles = serveStatic({ root: options.webRoot });
+    app.use((c, next) =>
+      c.req.path.endsWith("/") || c.req.path === "/index.html"
+        ? next()
+        : staticFiles(c, next),
+    );
+  }
   app.use(requirePageSession(sessionOptions));
-  const spaFallback = serveStatic({
-    path: join(options.webRoot, "index.html"),
-  });
-  app.use((c, next) =>
-    c.req.path.startsWith("/assets/") ? next() : spaFallback(c, next),
-  );
+  if (hasWebApp) {
+    const spaFallback = serveStatic({
+      path: join(options.webRoot, "index.html"),
+    });
+    app.use((c, next) =>
+      c.req.path.startsWith("/assets/") ? next() : spaFallback(c, next),
+    );
+  }
   app.notFound(notFound);
   app.onError(createErrorHandler(options.logger));
   return app;

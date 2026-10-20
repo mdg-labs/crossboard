@@ -15,7 +15,8 @@ export type IssueDetails = Extract<
   { bodyHtml: string }
 >;
 export type IssueRelation = IssueSummary["blockedBy"]["items"][number];
-export type SubIssue = IssueDetails["subIssues"]["items"][number];
+export type SubIssueNode = IssueDetails["subIssues"]["items"][number];
+export type IssueAncestor = IssueSummary["ancestors"][number];
 export type IssueComment = IssueDetails["comments"][number];
 
 export interface IssueRef {
@@ -28,6 +29,10 @@ export interface IssueRef {
 export const MAX_COMMENTS = 100;
 /** The sub-issues the details route returns at most (SPEC FR-43). */
 export const MAX_SUB_ISSUES = 50;
+
+/** An issue as `owner/repo#number`. */
+export const refLabel = (ref: IssueRef): string =>
+  `${ref.owner}/${ref.repo}#${String(ref.number)}`;
 
 export const detailPath = (ref: IssueRef): string =>
   `/i/${encodeURIComponent(ref.owner)}/${encodeURIComponent(ref.repo)}/${String(ref.number)}`;

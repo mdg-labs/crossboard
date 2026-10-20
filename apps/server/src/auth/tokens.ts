@@ -22,10 +22,11 @@ export interface UserTokens {
   /**
    * A user access token that is valid for at least the refresh margin, else
    * null when the user has no usable tokens: none stored, an expired refresh
-   * token, or a refresh token GitHub rejected (`bad_refresh_token`). In the
-   * last two cases the user's tokens and sessions are deleted, unless a sign-in
-   * stored a newer pair in the meantime: that pair is kept, and a refresh
-   * that GitHub rejected returns its access token. A refresh that
+   * token, a refresh token GitHub rejected (`bad_refresh_token`), or stored
+   * tokens that no longer decrypt under the current `CROSSBOARD_APP_SECRET`
+   * (SPEC §9.3). In the last three cases the user's tokens and sessions are
+   * deleted, unless a sign-in stored a newer pair in the meantime: that pair
+   * is kept, and its access token is returned. A refresh that
    * fails for any other reason, such as rejected client credentials or a rate
    * limit, throws and changes nothing.
    */
@@ -35,7 +36,8 @@ export interface UserTokens {
    * means the user revoked the authorization. Deletes the user's tokens and
    * sessions and returns true, unless the stored row no longer holds that
    * access token (a refresh or a sign-in stored a newer pair since): then
-   * nothing changes and the result is false.
+   * nothing changes and the result is false. Stored tokens that no longer
+   * decrypt are deleted the same way.
    */
   rejected(userId: number, accessToken: string): boolean;
 }
@@ -53,19 +55,37 @@ export function createUserTokens({
   const refreshing = new Map<number, Promise<string | null>>();
 
   /**
+   * The plaintext of a stored token, or undefined when it does not decrypt
+   * under the current secret (a failed authentication tag or a value not in
+   * the encrypted format).
+   */
+  function open(stored: string): string | undefined {
+    try {
+      return decrypt(stored, appSecret);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Deletes the user's tokens and sessions only while the stored row still
    * holds `refreshTokenEnc`; a sign-in that stored a newer pair since is left
-   * alone and its access token is returned instead.
+   * alone and its access token is returned instead, when it decrypts.
    */
-  function revoke(userId: number, refreshTokenEnc: string): string | null {
-    const current = db.transaction((tx) => {
+  function revoke(
+    userId: number,
+    refreshTokenEnc: string,
+    reason = "the user's GitHub tokens are no longer usable; their tokens and sessions were deleted",
+  ): string | null {
+    const newer = db.transaction((tx) => {
       const row = tx
         .select()
         .from(schema.userTokens)
         .where(eq(schema.userTokens.userId, userId))
         .get();
       if (row !== undefined && row.refreshTokenEnc !== refreshTokenEnc) {
-        return row;
+        const token = open(row.accessTokenEnc);
+        if (token !== undefined) return token;
       }
       tx.delete(schema.sessions)
         .where(eq(schema.sessions.userId, userId))
@@ -75,13 +95,20 @@ export function createUserTokens({
         .run();
       return undefined;
     });
-    if (current !== undefined)
-      return decrypt(current.accessTokenEnc, appSecret);
-    logger.warn(
-      { userId },
-      "the user's GitHub tokens are no longer usable; their tokens and sessions were deleted",
-    );
+    if (newer !== undefined) return newer;
+    logger.warn({ userId }, reason);
     return null;
+  }
+
+  function revokeUndecryptable(
+    userId: number,
+    refreshTokenEnc: string,
+  ): string | null {
+    return revoke(
+      userId,
+      refreshTokenEnc,
+      "the user's stored GitHub tokens do not decrypt under the current CROSSBOARD_APP_SECRET; their tokens and sessions were deleted",
+    );
   }
 
   async function refresh(
@@ -92,16 +119,17 @@ export function createUserTokens({
     if (refreshExpiresAt <= now()) {
       return revoke(userId, refreshTokenEnc);
     }
+    const refreshToken = open(refreshTokenEnc);
+    if (refreshToken === undefined) {
+      return revokeUndecryptable(userId, refreshTokenEnc);
+    }
     const app = credentials();
     if (app === null) {
       throw new Error("no GitHub App credentials to refresh a user token with");
     }
     let rotated;
     try {
-      rotated = await github.refreshOAuthToken(
-        app,
-        decrypt(refreshTokenEnc, appSecret),
-      );
+      rotated = await github.refreshOAuthToken(app, refreshToken);
     } catch (error) {
       if (error instanceof GithubError && error.code === "bad_refresh_token") {
         return revoke(userId, refreshTokenEnc);
@@ -134,12 +162,12 @@ export function createUserTokens({
         .from(schema.userTokens)
         .where(eq(schema.userTokens.userId, userId))
         .get();
-      if (
-        row === undefined ||
-        decrypt(row.accessTokenEnc, appSecret) !== accessToken
-      ) {
-        return false;
+      if (row === undefined) return false;
+      const stored = open(row.accessTokenEnc);
+      if (stored === undefined) {
+        return revokeUndecryptable(userId, row.refreshTokenEnc) === null;
       }
+      if (stored !== accessToken) return false;
       return revoke(userId, row.refreshTokenEnc) === null;
     },
 
@@ -153,7 +181,10 @@ export function createUserTokens({
         .get();
       if (row === undefined) return null;
       if (row.accessExpiresAt - now() >= ACCESS_TOKEN_REFRESH_MARGIN_MS) {
-        return decrypt(row.accessTokenEnc, appSecret);
+        return (
+          open(row.accessTokenEnc) ??
+          revokeUndecryptable(userId, row.refreshTokenEnc)
+        );
       }
       const running = refreshing.get(userId);
       if (running !== undefined) return running;

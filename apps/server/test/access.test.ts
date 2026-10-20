@@ -1264,6 +1264,41 @@ describe("the hourly job", () => {
     expect(JSON.stringify(logs)).not.toContain("ghu_revoked");
   });
 
+  it("signs a user out whose stored tokens no longer decrypt under the current secret, without logging an error", async () => {
+    const built = build();
+    const { access, logger } = built;
+    const jobs = createJobs({ logger });
+    registerAccessJob(jobs, access, database.db, logger);
+    const stale = addUser(database.db, "alice");
+    storeTokens(database.db, "b".repeat(32), stale.id, { access: ALICE });
+    const alice = signIn(database.db, stale.id);
+    const bob = signIn(database.db, userWithToken("bob", BOB).id);
+    worlds[BOB] = {
+      installations: [{ id: 2, login: "bob" }],
+      repos: { 2: [repo(20, "bob", "secret")] },
+    };
+    const app = appFor(built);
+
+    jobs.start();
+    jobs.enqueue(ACCESS_JOB, undefined);
+    await jobs.stop();
+
+    expect(tokensOf(alice.userId)).toEqual([]);
+    expect(sessionsOf(alice.userId)).toEqual([]);
+    expect(
+      (await app.request("/api/me", { headers: { Cookie: alice.cookie } }))
+        .status,
+    ).toBe(401);
+    expect(accessOf(bob.userId)).toEqual(["R_20"]);
+    expect(sessionsOf(bob.userId)).toHaveLength(1);
+    expect(logs.filter((entry) => (entry.level as number) >= 50)).toEqual([]);
+    expect(
+      logs.filter(
+        (entry) => entry.level === 40 && entry.userId === alice.userId,
+      ),
+    ).toHaveLength(1);
+  });
+
   it("signs a user out when the 401 comes from the repositories call", async () => {
     const { access, logger } = build();
     const jobs = createJobs({ logger });

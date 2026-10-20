@@ -1,4 +1,0 @@
-self-hosted-runner:
-  # Custom labels of the self-hosted runners (runners01).
-  labels:
-    - runners01

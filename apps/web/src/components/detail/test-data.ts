@@ -2,6 +2,7 @@ import type {
   IssueDetails,
   IssueRelation,
   IssueSummary,
+  SubIssueNode,
 } from "@/lib/issue-detail";
 
 const NOW = Date.now();
@@ -20,6 +21,7 @@ export function summary(overrides: Partial<IssueSummary> = {}): IssueSummary {
     assignees: [],
     parent: null,
     subIssues: { total: 0, completed: 0 },
+    ancestors: [],
     blockedBy: { open: 0, notAccessible: 0, items: [] },
     blocking: { open: 0, notAccessible: 0, items: [] },
     isBlocked: false,
@@ -41,6 +43,25 @@ export function relation(
     state: "OPEN",
     url: `https://github.com/acme/widgets/issues/${n}`,
     synced: true,
+    ...overrides,
+  };
+}
+
+export function subIssue(
+  n: number,
+  overrides: Partial<SubIssueNode> = {},
+): SubIssueNode {
+  return {
+    owner: "acme",
+    repo: "widgets",
+    number: n,
+    title: `Sub-issue ${n}`,
+    state: "OPEN",
+    url: `https://github.com/acme/widgets/issues/${n}`,
+    synced: true,
+    subIssues: null,
+    notAccessible: 0,
+    children: [],
     ...overrides,
   };
 }

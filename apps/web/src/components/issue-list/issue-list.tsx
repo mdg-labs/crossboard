@@ -18,7 +18,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
+import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { loadedIssues, issuesQuery, SORT_ITEMS, type Sort } from "@/lib/issues";
 import { meQuery } from "@/lib/me";
 
@@ -55,20 +57,34 @@ function EmptyIssues(): React.ReactElement {
   );
 }
 
+/** The header count (SPEC FR-11, FR-12): the matched issues, or in nesting mode the top-level rows and the matched total. */
+function countText(total: number, matched: number | undefined): string {
+  const format = (count: number, noun: string) =>
+    `${count.toLocaleString("en-US")} ${count === 1 ? noun : `${noun}s`}`;
+  return matched === undefined
+    ? format(total, "issue")
+    : `${format(total, "top-level issue")} · ${matched.toLocaleString("en-US")} matched`;
+}
+
 export function IssueList({
   q,
   sort,
+  nest,
   onSortChange,
+  onNestChange,
   onFilter,
 }: {
   q: string;
   sort: Sort;
+  nest: boolean;
   onSortChange: (sort: Sort) => void;
+  onNestChange: (nest: boolean) => void;
   onFilter: (qualifier: string) => void;
 }): React.ReactElement {
-  const issues = useInfiniteQuery(issuesQuery(q, sort));
+  const issues = useInfiniteQuery(issuesQuery(q, sort, nest));
   const items = loadedIssues(issues.data);
   const total = issues.data?.pages[0]?.total;
+  const matched = nest ? issues.data?.pages[0]?.matched : undefined;
   const { fetchNextPage } = issues;
 
   let body: React.ReactElement;
@@ -113,6 +129,7 @@ export function IssueList({
         <IssueTable
           hasMore={issues.hasNextPage && !issues.isFetchNextPageError}
           items={items}
+          nest={nest}
           loadingMore={issues.isFetchingNextPage}
           onFilter={onFilter}
           onLoadMore={() => void fetchNextPage()}
@@ -143,11 +160,13 @@ export function IssueList({
     <section aria-label="Issues" className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center justify-between gap-4 border-b px-4 py-2">
         <p className="text-muted-foreground text-sm" role="status">
-          {total === undefined
-            ? ""
-            : `${total.toLocaleString("en-US")} ${total === 1 ? "issue" : "issues"}`}
+          {total === undefined ? "" : countText(total, matched)}
         </p>
         <div className="flex items-center gap-4">
+          <Label>
+            <Switch checked={nest} onCheckedChange={onNestChange} />
+            Nest sub-issues
+          </Label>
           <p className="flex items-center gap-1.5 text-muted-foreground text-xs">
             <KbdGroup>
               <Kbd>j</Kbd>

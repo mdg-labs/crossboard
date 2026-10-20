@@ -1,4 +1,5 @@
 import { ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
+import { BlockedMarker } from "@/components/blocked-marker";
 import { issueTypeColors, labelColors } from "@/components/issue-list/colors";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -20,8 +21,10 @@ export interface CardActions {
 }
 
 /**
- * One card of a board column (SPEC FR-32): repo, number, title, labels,
- * assignees, type, the blocked badge and sub-issue progress. In collapsed mode
+ * One card of a board column (SPEC FR-32): repo, number and the blocked marker
+ * in its header row (FR-26), title, the parent in expanded mode, the blocked
+ * badge first among the badges, labels, assignees, type and sub-issue
+ * progress. In collapsed mode
  * a card with nested sub-issues has a toggle that lists them below it; the
  * nested cards can expand in turn (FR-31).
  */
@@ -40,6 +43,7 @@ export function BoardCard({
   };
   const children = card.children ?? [];
   const { total, completed } = card.subIssues;
+  const { parent } = card;
 
   return (
     <Collapsible
@@ -47,7 +51,8 @@ export function BoardCard({
       open={children.length > 0 && actions.isExpanded(card.id)}
     >
       <Card
-        className="cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="cursor-pointer outline-none hover:border-foreground/30 focus-visible:ring-2 focus-visible:ring-ring data-blocked:shadow-[inset_3px_0_0_0_var(--destructive)]"
+        data-blocked={card.isBlocked ? "true" : undefined}
         data-issue-id={card.id}
         onClick={(event) => {
           if (
@@ -67,9 +72,12 @@ export function BoardCard({
       >
         <CardPanel className="flex flex-col gap-2 p-3">
           <div className="flex items-center justify-between gap-2">
-            <p className="min-w-0 truncate text-muted-foreground text-xs">
-              {repo} <span className="tabular-nums">#{card.number}</span>
-            </p>
+            <div className="flex min-w-0 items-center gap-1.5">
+              <BlockedMarker issue={card} />
+              <p className="min-w-0 truncate text-muted-foreground text-xs">
+                {repo} <span className="tabular-nums">#{card.number}</span>
+              </p>
+            </div>
             <Button
               aria-label={`Open ${repo}#${card.number} on GitHub`}
               render={<a href={card.url} rel="noreferrer" target="_blank" />}
@@ -80,11 +88,33 @@ export function BoardCard({
             </Button>
           </div>
           <p className="break-words font-medium text-sm">{card.title}</p>
+          {
+            // Only an expanded-mode card names its parent: the server leaves
+            // `children` off there, while collapsed mode nests sub-issues
+            // under their parent card (SPEC FR-31, FR-32).
+            card.children !== undefined || parent === null ? null : (
+              <Button
+                className="-mx-2 h-4 max-w-full justify-start px-2 font-normal text-muted-foreground text-xs"
+                onClick={() => actions.onOpen(parent)}
+                size="xs"
+                title={`Open the parent ${parent.owner}/${parent.repo}#${String(parent.number)}`}
+                variant="link"
+              >
+                <span aria-hidden="true">↳</span>
+                <span className="truncate">
+                  {parent.owner}/{parent.repo}#{parent.number}
+                </span>
+              </Button>
+            )
+          }
           {card.columnName === undefined &&
           card.type === null &&
           !card.isBlocked &&
           card.labels.length === 0 ? null : (
             <div className="flex flex-wrap gap-1">
+              {card.isBlocked ? (
+                <Badge variant="destructive">blocked</Badge>
+              ) : null}
               {card.columnName === undefined ? null : (
                 <Badge variant="outline">{card.columnName}</Badge>
               )}
@@ -93,9 +123,6 @@ export function BoardCard({
                   {card.type.name}
                 </Badge>
               )}
-              {card.isBlocked ? (
-                <Badge variant="destructive">blocked</Badge>
-              ) : null}
               {card.labels.map((label) => (
                 <Badge key={label.name} style={labelColors(label.color)}>
                   {label.name}

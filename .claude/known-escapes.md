@@ -40,6 +40,12 @@ existing line by adding its PR number.
 ## Tests
 
 - **Vacuous assertion** — a fixture keyed by a literal id (`[1]`) that matches the intended row only by insertion order, so a reorder makes the case pass without testing what it names — PR 91
+- **Leaked mock** — a spy restored by a plain statement after an awaited call instead of in `finally` or `afterEach`, so a rejection leaves it mocked for the later tests in the file — PR 106
+
+## Docs
+
+- **Doc drift from workflow** — user-facing docs describe a conditional CI behaviour (a moving tag only for the highest version) as unconditional — PR 106
+- **Broken table cell** — an unescaped `|` inside a code span in a GFM table row, which still splits the cell — PR 106
 
 ## Threat model
 

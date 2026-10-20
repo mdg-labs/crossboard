@@ -1,0 +1,247 @@
+name: Release
+
+# Publishes the container image when a version tag is pushed: the tag `vX.Y.Z`
+# becomes `ghcr.io/mdg-labs/crossboard:X.Y.Z` and, when it is the highest
+# version tag, `:latest` (SPEC D-16). `:nightly` and the short-SHA tags belong
+# to the nightly workflow (D-23). It must never gain a `pull_request`,
+# `pull_request_target` or `workflow_run` trigger: the build and publish jobs
+# hold `packages: write` (THREAT_MODEL T15, T16).
+#
+# It runs on GitHub-hosted runners. Each platform builds natively (amd64 on
+# `ubuntu-latest`, arm64 on `ubuntu-24.04-arm`) and pushes an untagged image
+# by digest; the last job joins the two digests into one multi-platform image
+# and is the only one that creates the version tags.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/mdg-labs/crossboard
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # GitHub's `v*.*.*` glob also matches `v1.2.3-rc1` and `vfoo.bar.baz`;
+      # only `vMAJOR.MINOR.PATCH` publishes, and only when it names the version
+      # the packages declare, which is the one `/api/health` reports.
+      - name: Check the tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The tag is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          version="${TAG#v}"
+          declared="$(jq -r .version package.json)"
+          if [ "$declared" != "$version" ]; then
+            echo "::error::The tag is ${version} but package.json declares ${declared}"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Gate
+        run: pnpm gate
+
+  build-amd64:
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          config="${RUNNER_TEMP}/docker-config"
+          mkdir -p "$config"
+          echo "DOCKER_CONFIG=${config}" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$config" docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+
+      # The default `docker` driver cannot push by digest.
+      - name: Create the builder
+        run: docker buildx create --name release --driver docker-container --use
+
+      # The image is pushed without a tag: no tag points at it until the
+      # publish job names it, so nothing that pulls by tag gets it. Attestations
+      # are off so that the digest is the platform's image manifest, which the
+      # publish job joins into an index.
+      - name: Build and push by digest
+        id: build
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          docker buildx build \
+            --builder release \
+            --platform linux/amd64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.source=${SERVER_URL}/${REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "${RUNNER_TEMP}/metadata.json" \
+            .
+          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/metadata.json")"
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build did not report an image digest"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "${RUNNER_TEMP}/docker-config"
+
+  build-arm64:
+    needs: gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          config="${RUNNER_TEMP}/docker-config"
+          mkdir -p "$config"
+          echo "DOCKER_CONFIG=${config}" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$config" docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+
+      # The default `docker` driver cannot push by digest.
+      - name: Create the builder
+        run: docker buildx create --name release --driver docker-container --use
+
+      # The image is pushed without a tag: no tag points at it until the
+      # publish job names it, so nothing that pulls by tag gets it. Attestations
+      # are off so that the digest is the platform's image manifest, which the
+      # publish job joins into an index.
+      - name: Build and push by digest
+        id: build
+        env:
+          VERSION: ${{ needs.gate.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          docker buildx build \
+            --builder release \
+            --platform linux/arm64 \
+            --provenance=false \
+            --sbom=false \
+            --label "org.opencontainers.image.source=${SERVER_URL}/${REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${VERSION}" \
+            --output "type=image,name=${IMAGE},push-by-digest=true,name-canonical=true,push=true" \
+            --metadata-file "${RUNNER_TEMP}/metadata.json" \
+            .
+          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/metadata.json")"
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The build did not report an image digest"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "${RUNNER_TEMP}/docker-config"
+
+  publish:
+    needs: [gate, build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          config="${RUNNER_TEMP}/docker-config"
+          mkdir -p "$config"
+          echo "DOCKER_CONFIG=${config}" >> "$GITHUB_ENV"
+          printf '%s' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$config" docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+
+      # `:latest` moves only to the highest stable version tag, so a re-run of
+      # an older release never moves it back. The tag list is read through the
+      # API; a failed or empty read fails the step, so an unknown highest tag
+      # never counts as this one.
+      - name: Join the platforms and tag the image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.gate.outputs.version }}
+          AMD64: ${{ needs.build-amd64.outputs.digest }}
+          ARM64: ${{ needs.build-arm64.outputs.digest }}
+        run: |
+          tags="$(gh api --paginate "repos/${REPOSITORY}/tags" --jq '.[].name')"
+          highest="$(grep -E '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<<"$tags" | sort -V | tail -n 1)"
+          if [ -z "$highest" ]; then
+            echo "::error::Could not read the version tags"
+            exit 1
+          fi
+          tag_args=(--tag "${IMAGE}:${VERSION}")
+          if [ "$highest" = "$TAG" ]; then
+            tag_args+=(--tag "${IMAGE}:latest")
+          else
+            echo "::notice::Skipping ${IMAGE}:latest: ${TAG} is not the highest version tag (${highest})"
+          fi
+          docker buildx imagetools create \
+            "${tag_args[@]}" \
+            --annotation "index:org.opencontainers.image.source=${SERVER_URL}/${REPOSITORY}" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
+            "${IMAGE}@${AMD64}" "${IMAGE}@${ARM64}"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "${RUNNER_TEMP}/docker-config"

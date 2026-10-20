@@ -9,7 +9,12 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { IssueDetail } from "@/components/detail/issue-detail";
-import { details, relation, summary } from "@/components/detail/test-data";
+import {
+  details,
+  relation,
+  subIssue,
+  summary,
+} from "@/components/detail/test-data";
 import { createQueryClient } from "@/lib/query-client";
 
 afterEach(() => {
@@ -39,12 +44,13 @@ function stubServer(stub: Stub) {
   return mock;
 }
 
-function renderDetail(onOpenIssue = vi.fn()) {
+function renderDetail(onOpenIssue = vi.fn(), wide = false) {
   render(
     <QueryClientProvider client={createQueryClient()}>
       <IssueDetail
         issue={{ owner: "acme", repo: "widgets", number: 1 }}
         onOpenIssue={onOpenIssue}
+        wide={wide}
       />
     </QueryClientProvider>,
   );
@@ -104,13 +110,83 @@ describe("the issue detail", () => {
     expect(screen.getByText("hubot").closest("a")?.getAttribute("href")).toBe(
       "https://github.com/hubot",
     );
-    expect(screen.getByText(/acme\/widgets#9 Epic/)).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: "Open on GitHub" }).getAttribute("href"),
-    ).toBe("https://github.com/acme/widgets/issues/1");
     expect(screen.getByText("Loading description")).toBeTruthy();
     expect(screen.getByText("Created")).toBeTruthy();
     expect(screen.getByText("Updated")).toBeTruthy();
+  });
+
+  describe("the layout", () => {
+    const stub = () =>
+      stubServer({
+        summary: () =>
+          Response.json(
+            summary({ labels: [{ name: "bug", color: "d73a4a" }] }),
+          ),
+        details: () => Response.json(details()),
+      });
+
+    it("lists the fields in the Properties aside, above the sections", async () => {
+      stub();
+      renderDetail();
+
+      const aside = await screen.findByRole("complementary", {
+        name: "Properties",
+      });
+      for (const label of ["Repository", "Author", "Created", "Labels"]) {
+        expect(within(aside).getByText(label)).toBeTruthy();
+      }
+      expect(aside.className).not.toContain("lg:col-start-2");
+    });
+
+    it("puts the Properties aside beside the content in a wide layout", async () => {
+      stub();
+      renderDetail(vi.fn(), true);
+
+      const aside = await screen.findByRole("complementary", {
+        name: "Properties",
+      });
+      expect(aside.className).toContain("lg:col-start-2");
+      expect(aside.className).toContain("lg:border-s");
+      expect(within(aside).getByText("Repository")).toBeTruthy();
+      const grid = aside.parentElement as HTMLElement;
+      expect(grid.className).toContain("lg:grid-cols-");
+      expect(
+        within(grid).getByRole("heading", { name: "Widget fails to render" }),
+      ).toBeTruthy();
+      expect(await screen.findByText("fails")).toBeTruthy();
+    });
+
+    it("shows the skeleton and the not-found state in a wide layout", async () => {
+      stubServer({
+        summary: () => new Promise<Response>(() => undefined),
+        details: () => new Promise<Response>(() => undefined),
+      });
+      renderDetail(vi.fn(), true);
+      expect(
+        screen.getByRole("status", { name: "Loading issue" }),
+      ).toBeTruthy();
+      cleanup();
+
+      stubServer({
+        summary: () => Response.json(errorBody("Not found"), { status: 404 }),
+        details: () => Response.json(errorBody("Not found"), { status: 404 }),
+      });
+      renderDetail(vi.fn(), true);
+      expect((await screen.findByRole("alert")).textContent).toContain(
+        "No detail for acme/widgets#1",
+      );
+    });
+
+    it("shows the retry in a wide layout when the summary fails", async () => {
+      stubServer({
+        summary: () => Response.json(errorBody("boom"), { status: 500 }),
+        details: () => Response.json(details()),
+      });
+      renderDetail(vi.fn(), true);
+
+      const alert = await screen.findByRole("alert");
+      expect(within(alert).getByRole("button", { name: "Retry" })).toBeTruthy();
+    });
   });
 
   it("renders the body in a markdown-body container when it arrives", async () => {
@@ -160,6 +236,130 @@ describe("the issue detail", () => {
     ).not.toBeNull();
   });
 
+  describe("the comment cards", () => {
+    const comment = (n: number, author: string) => ({
+      url: `https://github.com/acme/widgets/issues/1#issuecomment-${n}`,
+      createdAt: Date.now() - (10 - n) * 3_600_000,
+      author,
+      avatarUrl: null,
+      bodyHtml: `<p>Comment ${n}</p>`,
+    });
+    const stubComments = () =>
+      stubServer({
+        summary: () => Response.json(summary({ author: "octocat" })),
+        details: () =>
+          Response.json(
+            details({
+              comments: [
+                comment(1, "hubot"),
+                comment(2, "octocat"),
+                comment(3, "ghost"),
+              ],
+              commentsTotal: 3,
+            }),
+          ),
+      });
+    const cards = (list: HTMLElement) => [
+      ...list.querySelectorAll<HTMLElement>("[data-slot=card]"),
+    ];
+
+    it("renders one card per comment, with the avatar, author and time in its header", async () => {
+      stubComments();
+      renderDetail();
+
+      const list = await screen.findByRole("list", { name: "Comments" });
+      const [first, second, third] = cards(list);
+      expect(cards(list)).toHaveLength(3);
+      expect(first?.tagName).toBe("LI");
+      for (const [card, author, n] of [
+        [first, "hubot", 1],
+        [second, "octocat", 2],
+        [third, "ghost", 3],
+      ] as const) {
+        const header = card?.querySelector(
+          "[data-slot=card-header]",
+        ) as HTMLElement;
+        expect(
+          within(header)
+            .getByRole("link", { name: new RegExp(`${author}$`) })
+            .getAttribute("href"),
+        ).toBe(`https://github.com/${author}`);
+        expect(header.querySelector("[data-slot=avatar]")).not.toBeNull();
+        expect(
+          header.querySelector("time")?.closest("a")?.getAttribute("href"),
+        ).toBe(
+          `https://github.com/acme/widgets/issues/1#issuecomment-${String(n)}`,
+        );
+        expect(
+          card?.querySelector("[data-slot=card-panel] .markdown-body")
+            ?.textContent,
+        ).toBe(`Comment ${String(n)}`);
+      }
+    });
+
+    it("badges the comments of the issue's author and no others", async () => {
+      stubComments();
+      renderDetail();
+
+      const list = await screen.findByRole("list", { name: "Comments" });
+      const badged = cards(list).map((card) =>
+        within(card).queryByText("Author") === null ? "no" : "yes",
+      );
+      expect(badged).toEqual(["no", "yes", "no"]);
+    });
+
+    it("keeps the link to earlier comments above the first card", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () =>
+          Response.json(
+            details({ comments: [comment(1, "hubot")], commentsTotal: 5 }),
+          ),
+      });
+      renderDetail();
+
+      const list = await screen.findByRole("list", { name: "Comments" });
+      const items = within(list).getAllByRole("listitem");
+      expect(items[0]?.getAttribute("data-slot")).toBeNull();
+      expect(items[0]?.textContent).toContain("4 earlier comments on GitHub");
+      expect(items[1]?.getAttribute("data-slot")).toBe("card");
+    });
+  });
+
+  describe("the description card", () => {
+    it("frames the description like a comment, headed by who opened the issue", async () => {
+      stubServer({
+        summary: () => Response.json(summary({ author: "octocat" })),
+        details: () => Response.json(details()),
+      });
+      renderDetail();
+
+      const body = await screen.findByText("fails");
+      const card = body.closest("[data-slot=card]") as HTMLElement;
+      const header = card.querySelector(
+        "[data-slot=card-header]",
+      ) as HTMLElement;
+      expect(header.textContent).toContain("octocat");
+      expect(header.textContent).toContain("opened this issue");
+      expect(within(header).queryByText("Author")).toBeNull();
+      expect(body.closest(".markdown-body")).not.toBeNull();
+      expect(
+        header.querySelector("time")?.closest("a")?.getAttribute("href"),
+      ).toBe("https://github.com/acme/widgets/issues/1");
+    });
+
+    it("says so inside the card when there is no description", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () => Response.json(details({ bodyHtml: "" })),
+      });
+      renderDetail();
+
+      const empty = await screen.findByText("No description provided.");
+      expect(empty.closest("[data-slot=card]")).not.toBeNull();
+    });
+  });
+
   it("lists sub-issues with state and what lies beyond the first 50", async () => {
     stubServer({
       summary: () =>
@@ -171,22 +371,12 @@ describe("the issue detail", () => {
               total: 53,
               notAccessible: 1,
               items: [
-                {
-                  owner: "acme",
-                  repo: "widgets",
-                  number: 5,
+                subIssue(5, {
                   title: "Done sub",
                   state: "CLOSED",
-                  url: "https://github.com/acme/widgets/issues/5",
-                },
-                {
-                  owner: "acme",
-                  repo: "widgets",
-                  number: 6,
-                  title: "Open sub",
-                  state: "OPEN",
-                  url: "https://github.com/acme/widgets/issues/6",
-                },
+                  synced: false,
+                }),
+                subIssue(6, { title: "Open sub" }),
               ],
             },
           }),
@@ -228,16 +418,7 @@ describe("the issue detail", () => {
             subIssues: {
               total: 1,
               notAccessible: 0,
-              items: [
-                {
-                  owner: "acme",
-                  repo: "widgets",
-                  number: 5,
-                  title: "Only sub",
-                  state: "OPEN",
-                  url: "https://github.com/acme/widgets/issues/5",
-                },
-              ],
+              items: [subIssue(5, { title: "Only sub" })],
             },
           }),
         ),
@@ -247,6 +428,157 @@ describe("the issue detail", () => {
     await screen.findByText("Only sub");
     expect(screen.queryByText(/more on GitHub/)).toBeNull();
     expect(screen.queryByText(/earlier comment/)).toBeNull();
+  });
+
+  describe("the sub-issue tree", () => {
+    const chain = () =>
+      subIssue(2, {
+        subIssues: { total: 2, completed: 1 },
+        children: [
+          subIssue(3, {
+            subIssues: { total: 1, completed: 0 },
+            children: [subIssue(4)],
+          }),
+        ],
+      });
+
+    function stubChain(overrides: Partial<ReturnType<typeof details>> = {}) {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 1, completed: 0 } })),
+        details: () =>
+          Response.json(
+            details({
+              subIssues: { total: 1, notAccessible: 0, items: [chain()] },
+              ...overrides,
+            }),
+          ),
+      });
+    }
+
+    const toggle = (ref: string) =>
+      screen.findByRole("button", { name: `Sub-issues of ${ref}` });
+
+    it("expands each level to the next and shows completed/total per node", async () => {
+      stubChain();
+      renderDetail();
+
+      const child = await screen.findByRole("list", { name: "Sub-issues" });
+      expect(within(child).getByText("1/2")).toBeTruthy();
+      expect(screen.queryByText("Sub-issue 3")).toBeNull();
+
+      fireEvent.click(await toggle("acme/widgets#2"));
+      expect(await screen.findByText("Sub-issue 3")).toBeTruthy();
+      expect(screen.getByText("0/1")).toBeTruthy();
+      expect(screen.queryByText("Sub-issue 4")).toBeNull();
+
+      fireEvent.click(await toggle("acme/widgets#3"));
+      expect(await screen.findByText("Sub-issue 4")).toBeTruthy();
+      expect(
+        screen.getByRole("progressbar", { name: "1 of 2 completed" }),
+      ).toBeTruthy();
+    });
+
+    it("opens a synced node's detail and sends an unsynced one to GitHub", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 2, completed: 0 } })),
+        details: () =>
+          Response.json(
+            details({
+              subIssues: {
+                total: 2,
+                notAccessible: 0,
+                items: [
+                  chain(),
+                  subIssue(9, {
+                    state: "CLOSED",
+                    synced: false,
+                    url: "https://github.com/acme/widgets/issues/9",
+                  }),
+                ],
+              },
+            }),
+          ),
+      });
+      const onOpenIssue = renderDetail();
+
+      fireEvent.click(
+        await screen.findByRole("link", { name: "acme/widgets#2" }),
+      );
+      expect(onOpenIssue).toHaveBeenCalledWith({
+        owner: "acme",
+        repo: "widgets",
+        number: 2,
+      });
+
+      const closed = screen.getByRole("link", { name: "acme/widgets#9" });
+      expect(closed.getAttribute("href")).toBe(
+        "https://github.com/acme/widgets/issues/9",
+      );
+      expect(closed.getAttribute("target")).toBe("_blank");
+      expect(
+        screen.queryByRole("button", { name: "Sub-issues of acme/widgets#9" }),
+      ).toBeNull();
+      expect(onOpenIssue).toHaveBeenCalledTimes(1);
+    });
+
+    it("counts sub-issues the viewer cannot read in the node without naming them", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 1, completed: 0 } })),
+        details: () =>
+          Response.json(
+            details({
+              subIssues: {
+                total: 1,
+                notAccessible: 0,
+                items: [subIssue(2, { notAccessible: 2 })],
+              },
+            }),
+          ),
+      });
+      renderDetail();
+
+      fireEvent.click(await toggle("acme/widgets#2"));
+
+      expect(await screen.findByText("+2 not accessible")).toBeTruthy();
+    });
+
+    it("shows the completed line while the details load and nothing without sub-issues", async () => {
+      stubServer({
+        summary: () =>
+          Response.json(summary({ subIssues: { total: 4, completed: 1 } })),
+        details: () => new Promise<Response>(() => undefined),
+      });
+      renderDetail();
+
+      expect(await screen.findByText("1 of 4 completed")).toBeTruthy();
+      expect(screen.queryByRole("list", { name: "Sub-issues" })).toBeNull();
+    });
+
+    it("keeps the stale warning above the tree", async () => {
+      stubChain({ stale: true });
+      renderDetail();
+
+      expect(
+        await screen.findByText("This copy may be out of date"),
+      ).toBeTruthy();
+      expect(
+        await screen.findByRole("list", { name: "Sub-issues" }),
+      ).toBeTruthy();
+    });
+
+    it("shows no sub-issues section for an issue without sub-issues", async () => {
+      stubServer({
+        summary: () => Response.json(summary()),
+        details: () => Response.json(details()),
+      });
+      renderDetail();
+
+      await screen.findByText("fails");
+      expect(screen.queryByText("Sub-issues")).toBeNull();
+    });
   });
 
   describe("the dependency lists", () => {

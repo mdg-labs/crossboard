@@ -2,6 +2,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useRef, useState } from "react";
 import { DetailDrawer } from "@/components/detail/detail-drawer";
 import { isShortcut } from "@/components/filter-bar/keyboard";
+import { useExpandedRows } from "@/components/issue-list/expanded-rows";
 import { IssueRow, ROW_HEIGHT } from "@/components/issue-list/issue-row";
 import {
   Table,
@@ -11,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import type { IssueRef } from "@/lib/issue-detail";
-import type { IssueItem } from "@/lib/issues";
+import { visibleRows, type IssueItem } from "@/lib/issues";
 
 const refOf = (issue: IssueItem): IssueRef => ({
   owner: issue.repo.owner,
@@ -24,32 +25,52 @@ const OVERSCAN = 10;
 /** Loads the next page when the rendered rows come this close to the end. */
 const LOAD_MARGIN = 20;
 
+/** Widths in px; the title takes what the table has beyond `TITLE_MIN_WIDTH`. */
 const COLUMNS = [
-  { key: "repo", label: "Repository", className: "w-40" },
-  { key: "number", label: "Issue", className: "w-16" },
-  { key: "title", label: "Title", className: "w-auto" },
-  { key: "type", label: "Type", className: "w-24" },
-  { key: "labels", label: "Labels", className: "w-48" },
-  { key: "assignees", label: "Assignees", className: "w-28" },
-  { key: "milestone", label: "Milestone", className: "w-28" },
-  { key: "dependencies", label: "Dependencies", className: "w-44" },
-  { key: "subissues", label: "Sub-issues", className: "w-32" },
-  { key: "updated", label: "Updated", className: "w-28" },
+  { key: "repo", label: "Repository", width: 160 },
+  { key: "number", label: "Issue", width: 64 },
+  { key: "title", label: "Title", width: null },
+  { key: "type", label: "Type", width: 96 },
+  { key: "updated", label: "Updated", width: 112 },
   {
     key: "open",
     label: <span className="sr-only">Open on GitHub</span>,
-    className: "w-12",
+    width: 48,
   },
+  { key: "labels", label: "Labels", width: 192 },
+  { key: "assignees", label: "Assignees", width: 112 },
+  { key: "milestone", label: "Milestone", width: 112 },
+  { key: "dependencies", label: "Dependencies", width: 176 },
+  { key: "subissues", label: "Sub-issues", width: 128 },
 ];
 
+/** The columns that lead the row and must fit the narrowest desktop viewport (SPEC FR-12, D-13). */
+const LEADING_COLUMNS = 6;
+export const TITLE_MIN_WIDTH = 288;
+export const LEADING_WIDTH =
+  COLUMNS.slice(0, LEADING_COLUMNS).reduce(
+    (sum, column) => sum + (column.width ?? 0),
+    0,
+  ) + TITLE_MIN_WIDTH;
+const TABLE_MIN_WIDTH =
+  COLUMNS.reduce((sum, column) => sum + (column.width ?? 0), 0) +
+  TITLE_MIN_WIDTH;
+
+/**
+ * The virtualized list (SPEC FR-11). In nesting mode (`nest`) `items` are the
+ * top-level issues and the rows are flattened from the ones the viewer
+ * expanded (FR-12); `j`/`k`, `Enter` and `o` work over those visible rows.
+ */
 export function IssueTable({
-  items,
+  items: topLevel,
+  nest,
   hasMore,
   loadingMore,
   onLoadMore,
   onFilter,
 }: {
   items: IssueItem[];
+  nest: boolean;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -57,6 +78,9 @@ export function IssueTable({
 }): React.ReactElement {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [panel, setPanel] = useState<IssueRef | null>(null);
+  const { isExpanded, setExpanded } = useExpandedRows();
+  const lines = visibleRows(topLevel, isExpanded);
+  const items = lines.map((line) => line.issue);
   const scrollRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -129,7 +153,8 @@ export function IssueTable({
   return (
     <>
       <Table
-        className="min-w-[1500px] table-fixed border-separate border-spacing-0"
+        className="table-fixed border-separate border-spacing-0"
+        style={{ minWidth: TABLE_MIN_WIDTH }}
         render={
           <div className="min-h-0 flex-1 overflow-auto" ref={scrollRef} />
         }
@@ -137,7 +162,12 @@ export function IssueTable({
         <TableHeader className="sticky top-0 z-10 bg-background [&_th]:border-b">
           <TableRow className="border-b-0">
             {COLUMNS.map((column) => (
-              <TableHead className={column.className} key={column.key}>
+              <TableHead
+                key={column.key}
+                style={
+                  column.width === null ? undefined : { width: column.width }
+                }
+              >
                 {column.label}
               </TableHead>
             ))}
@@ -148,14 +178,26 @@ export function IssueTable({
             <tr aria-hidden="true" style={{ height: paddingTop }} />
           ) : null}
           {rows.map((row) => {
-            const issue = items[row.index];
-            return issue === undefined ? null : (
+            const line = lines[row.index];
+            return line === undefined ? null : (
               <IssueRow
-                issue={issue}
-                key={issue.id}
+                issue={line.issue}
+                key={line.issue.id}
+                nesting={
+                  nest
+                    ? {
+                        depth: line.depth,
+                        under: line.under,
+                        expandable: line.expandable,
+                        expanded: line.expanded,
+                        onToggle: (open) => setExpanded(line.issue.id, open),
+                      }
+                    : undefined
+                }
                 onFilter={onFilter}
                 onOpen={openIssue}
-                selected={issue.id === selectedId}
+                onOpenRef={setPanel}
+                selected={line.issue.id === selectedId}
               />
             );
           })}

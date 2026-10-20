@@ -15,6 +15,7 @@ import {
 } from "../github/index.js";
 import { sanitizeGithubHtml } from "../security/index.js";
 import { loadAccessibleIssues, type IssueLocator } from "./filterable.js";
+import { buildSubIssueTree } from "./hierarchy.js";
 
 const { installations, issueDetails, issues, repos } = schema;
 
@@ -318,6 +319,7 @@ export function createIssueDetails({
 
   function present(
     stored: Stored,
+    root: IssueLocator,
     userId: number,
     stale: boolean,
   ): IssueDetails {
@@ -336,7 +338,7 @@ export function createIssueDetails({
       subIssues: {
         total: stored.subIssues.total,
         notAccessible: stored.subIssues.items.length - items.length,
-        items,
+        items: buildSubIssueTree(db, userId, root, items),
       },
       fetchedAt: stored.fetchedAt,
       stale,
@@ -362,7 +364,7 @@ export function createIssueDetails({
 
       const cached = readCached(id);
       if (cached !== null && isFresh(cached, updatedAt)) {
-        return { ok: true, details: present(cached, userId, false) };
+        return { ok: true, details: present(cached, locator, userId, false) };
       }
 
       const key = `${id}:${String(updatedAt)}`;
@@ -377,11 +379,14 @@ export function createIssueDetails({
         inflight.set(key, pending);
       }
       try {
-        return { ok: true, details: present(await pending, userId, false) };
+        return {
+          ok: true,
+          details: present(await pending, locator, userId, false),
+        };
       } catch (error) {
         if (!(error instanceof FailureError)) throw error;
         if (cached !== null && error.failure.kind !== "not_found") {
-          return { ok: true, details: present(cached, userId, true) };
+          return { ok: true, details: present(cached, locator, userId, true) };
         }
         return { ok: false, failure: error.failure };
       }

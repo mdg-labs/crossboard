@@ -26,12 +26,14 @@ export function ExternalLink({
   href,
   className,
   label,
+  title,
   children,
 }: {
   href: string;
   className?: string;
   /** The accessible name, for a link whose content is not text. */
   label?: string;
+  title?: string;
   children: React.ReactNode;
 }): React.ReactElement {
   return (
@@ -40,6 +42,7 @@ export function ExternalLink({
       className={className}
       href={href}
       rel="noopener noreferrer"
+      title={title}
       target="_blank"
     >
       {children}
@@ -58,6 +61,7 @@ export function IssueLink({
   onOpenIssue,
   className,
   label,
+  title,
   children,
 }: {
   issue: IssueRef;
@@ -67,11 +71,18 @@ export function IssueLink({
   className?: string;
   /** The accessible name, for a link whose content is not text. */
   label?: string;
+  /** A tooltip for the link. */
+  title?: string;
   children: React.ReactNode;
 }): React.ReactElement {
   if (!synced) {
     return (
-      <ExternalLink className={className} href={url} label={label}>
+      <ExternalLink
+        className={className}
+        href={url}
+        label={label}
+        title={title}
+      >
         {children}
       </ExternalLink>
     );
@@ -81,6 +92,7 @@ export function IssueLink({
       aria-label={label}
       className={className}
       href={detailPath(issue)}
+      title={title}
       onClick={(event) => {
         if (
           event.button !== 0 ||

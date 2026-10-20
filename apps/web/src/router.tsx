@@ -4,6 +4,7 @@ import {
   createRoute,
   createRouter,
   Outlet,
+  retainSearchParams,
   type RouterHistory,
 } from "@tanstack/react-router";
 import { TopBar } from "@/components/top-bar/top-bar";
@@ -46,6 +47,9 @@ const indexRoute = createRoute({
   getParentRoute: () => shellRoute,
   path: "/",
   validateSearch: parseIndexSearch,
+  // The nesting mode is a display setting: setting a filter, a sort or a
+  // saved view from the top bar leaves it as it is.
+  search: { middlewares: [retainSearchParams(["nest"])] },
   component: IndexRoute,
 });
 
