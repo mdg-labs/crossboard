@@ -1,4 +1,4 @@
-import { count, eq, not, sql } from "drizzle-orm";
+import { and, count, eq, not, or, sql, type SQL } from "drizzle-orm";
 import { inUserAccess } from "../access/index.js";
 import type {
   IssueItem,
@@ -8,9 +8,8 @@ import type {
 } from "../api/schemas.js";
 import { schema, type Db } from "../db/index.js";
 import { loadAccessibleIssues } from "./filterable.js";
-import { sortIssues } from "./sort.js";
 
-const { issueRefs, issues } = schema;
+const { issueRefs, issues, repos } = schema;
 
 const issueKey = (owner: string, repo: string, number: number) =>
   `${owner}/${repo}#${String(number)}`.toLowerCase();
@@ -76,13 +75,73 @@ export function loadAncestors(
   return ancestors;
 }
 
+/** The columns of an issue the sub-issue tree emits. */
+interface TreeIssue {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  subIssues: IssueItem["subIssues"];
+}
+
+const treeColumns = {
+  owner: repos.owner,
+  repo: repos.name,
+  number: issues.number,
+  title: issues.title,
+  url: issues.url,
+  subTotal: issues.subTotal,
+  subCompleted: issues.subCompleted,
+};
+
+const toTreeIssue = (row: {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  subTotal: number;
+  subCompleted: number;
+}): TreeIssue => ({
+  owner: row.owner,
+  repo: row.repo,
+  number: row.number,
+  title: row.title,
+  url: row.url,
+  subIssues: { total: row.subTotal, completed: row.subCompleted },
+});
+
+const treeKey = (issue: TreeIssue) =>
+  issueKey(issue.owner, issue.repo, issue.number);
+
+/**
+ * SQLite caps an expression tree at a depth of 1000, and an OR chain is one
+ * level per term, so a level of the tree is looked up in batches of parents.
+ */
+const parentBatchSize = 200;
+
+const never = sql`0 = 1`;
+const allOf = (...conditions: SQL[]): SQL => and(...conditions) ?? never;
+const anyOf = (conditions: SQL[]): SQL => or(...conditions) ?? never;
+
+const compareText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Repo then number, the `repo-asc` order of the list (SPEC FR-13). */
+const byRepoAndNumber = (a: TreeIssue, b: TreeIssue) =>
+  compareText(a.owner.toLowerCase(), b.owner.toLowerCase()) ||
+  compareText(a.repo.toLowerCase(), b.repo.toLowerCase()) ||
+  a.number - b.number;
+
 /**
  * Turns the first sub-issues GitHub listed for an issue into the tree of
  * SPEC FR-40. A listed sub-issue that is synced in the viewer's access gets
  * its progress and, from the parent of each synced issue, its synced
  * sub-issues, recursively and without a depth limit. Nothing here asks
- * GitHub. Synced sub-issues outside the viewer's access are counted in their
- * parent's `notAccessible` and never named, and an issue that already
+ * GitHub, and it reads only the listed sub-issues and, level by level, the
+ * children of the issues it reaches, every query under the viewer's access
+ * (SPEC §9.1). Synced sub-issues outside the viewer's access are counted in
+ * their parent's `notAccessible` and never named, and an issue that already
  * appears in the tree (or is the root) is not listed again, so a parent
  * cycle ends before the repeat.
  */
@@ -94,56 +153,111 @@ export function buildSubIssueTree(
 ): SubIssueNode[] {
   if (listed.length === 0) return [];
 
-  const syncedByKey = new Map<string, IssueItem>();
-  const childrenOf = new Map<string, IssueItem[]>();
-  const accessible = sortIssues(loadAccessibleIssues(db, userId), "repo-asc");
-  for (const { item } of accessible) {
-    syncedByKey.set(
-      issueKey(item.repo.owner, item.repo.name, item.number),
-      item,
-    );
-  }
-  for (const { item } of accessible) {
-    if (item.parent === null) continue;
-    const parentKey = issueKey(
-      item.parent.owner,
-      item.parent.repo,
-      item.parent.number,
-    );
-    const siblings = childrenOf.get(parentKey);
-    if (siblings === undefined) childrenOf.set(parentKey, [item]);
-    else siblings.push(item);
-  }
-
-  const hiddenOf = new Map<string, number>();
-  for (const row of db
-    .select({
-      repoFullName: issueRefs.repoFullName,
-      number: issueRefs.number,
-      hidden: count(),
-    })
-    .from(issues)
-    .innerJoin(issueRefs, eq(issues.parentId, issueRefs.id))
-    .where(not(inUserAccess(db, userId, issues.repoId)))
-    .groupBy(issueRefs.id)
-    .all()) {
-    hiddenOf.set(
-      `${row.repoFullName}#${String(row.number)}`.toLowerCase(),
-      row.hidden,
-    );
-  }
-
   const rootKey = issueKey(root.owner, root.repo, root.number);
   const listedKeys = new Set(
     listed.map((sub) => issueKey(sub.owner, sub.repo, sub.number)),
   );
+
+  const syncedByKey = new Map<string, TreeIssue>();
+  const listedLookup = [...listedKeys].filter((key) => key !== rootKey);
+  if (listedLookup.length > 0) {
+    const wanted = new Set(listedLookup);
+    for (const row of db
+      .select(treeColumns)
+      .from(issues)
+      .innerJoin(repos, eq(issues.repoId, repos.id))
+      .where(
+        allOf(
+          inUserAccess(db, userId, issues.repoId),
+          anyOf(
+            listed.map((sub) =>
+              allOf(
+                sql`lower(${repos.owner}) = ${sub.owner.toLowerCase()}`,
+                sql`lower(${repos.name}) = ${sub.repo.toLowerCase()}`,
+                eq(issues.number, sub.number),
+              ),
+            ),
+          ),
+        ),
+      )
+      .all()) {
+      const issue = toTreeIssue(row);
+      if (wanted.has(treeKey(issue))) syncedByKey.set(treeKey(issue), issue);
+    }
+  }
+
+  const childrenOf = new Map<string, TreeIssue[]>();
+  const hiddenOf = new Map<string, number>();
+  const loaded = new Set([rootKey, ...syncedByKey.keys()]);
+  let frontier = [...syncedByKey.values()];
+  while (frontier.length > 0) {
+    const next: TreeIssue[] = [];
+    for (let at = 0; at < frontier.length; at += parentBatchSize) {
+      const parentMatches = anyOf(
+        frontier
+          .slice(at, at + parentBatchSize)
+          .map((parent) =>
+            allOf(
+              sql`lower(${issueRefs.repoFullName}) = ${`${parent.owner}/${parent.repo}`.toLowerCase()}`,
+              eq(issueRefs.number, parent.number),
+            ),
+          ),
+      );
+
+      for (const row of db
+        .select({
+          repoFullName: issueRefs.repoFullName,
+          number: issueRefs.number,
+          hidden: count(),
+        })
+        .from(issues)
+        .innerJoin(issueRefs, eq(issues.parentId, issueRefs.id))
+        .where(
+          allOf(not(inUserAccess(db, userId, issues.repoId)), parentMatches),
+        )
+        .groupBy(issueRefs.id)
+        .all()) {
+        hiddenOf.set(
+          `${row.repoFullName}#${String(row.number)}`.toLowerCase(),
+          row.hidden,
+        );
+      }
+
+      for (const row of db
+        .select({
+          ...treeColumns,
+          parentRepo: issueRefs.repoFullName,
+          parentNumber: issueRefs.number,
+        })
+        .from(issues)
+        .innerJoin(repos, eq(issues.repoId, repos.id))
+        .innerJoin(issueRefs, eq(issues.parentId, issueRefs.id))
+        .where(allOf(inUserAccess(db, userId, issues.repoId), parentMatches))
+        .all()) {
+        const child = toTreeIssue(row);
+        const parentKey =
+          `${row.parentRepo}#${String(row.parentNumber)}`.toLowerCase();
+        const siblings = childrenOf.get(parentKey);
+        if (siblings === undefined) childrenOf.set(parentKey, [child]);
+        else siblings.push(child);
+        const childKey = treeKey(child);
+        if (!loaded.has(childKey)) {
+          loaded.add(childKey);
+          next.push(child);
+        }
+      }
+    }
+    frontier = next;
+  }
+  for (const siblings of childrenOf.values()) siblings.sort(byRepoAndNumber);
+
   const visited = new Set([rootKey]);
-  const descend = (item: IssueItem): SubIssueNode => {
-    const key = issueKey(item.repo.owner, item.repo.name, item.number);
+  const descend = (item: TreeIssue): SubIssueNode => {
+    const key = treeKey(item);
     visited.add(key);
     return {
-      owner: item.repo.owner,
-      repo: item.repo.name,
+      owner: item.owner,
+      repo: item.repo,
       number: item.number,
       title: item.title,
       state: "OPEN",
@@ -153,11 +267,7 @@ export function buildSubIssueTree(
       notAccessible: hiddenOf.get(key) ?? 0,
       children: (childrenOf.get(key) ?? [])
         .filter((child) => {
-          const childKey = issueKey(
-            child.repo.owner,
-            child.repo.name,
-            child.number,
-          );
+          const childKey = treeKey(child);
           return !visited.has(childKey) && !listedKeys.has(childKey);
         })
         .map(descend),
@@ -167,7 +277,7 @@ export function buildSubIssueTree(
   return listed.map((sub) => {
     const key = issueKey(sub.owner, sub.repo, sub.number);
     const item = syncedByKey.get(key);
-    if (item === undefined || key === rootKey) {
+    if (item === undefined) {
       return {
         ...sub,
         synced: false,

@@ -6,13 +6,14 @@ import { issueDetailsSchema } from "../src/api/schemas.js";
 import { createApp } from "../src/app.js";
 import { createSetup } from "../src/auth/setup/index.js";
 import { loadConfig } from "../src/config/index.js";
-import { schema } from "../src/db/index.js";
+import { schema, type Db } from "../src/db/index.js";
 import {
   GithubError,
   createGithubClient,
   type InstallationClient,
 } from "../src/github/index.js";
 import { DETAILS_MAX_AGE_MS } from "../src/issues/index.js";
+import { buildSubIssueTree } from "../src/issues/hierarchy.js";
 import { createLogger } from "../src/logger.js";
 import { createTestDatabase, type TestDatabase } from "./database.js";
 import { githubEnv, validEnv, unusedJobs } from "./helpers.js";
@@ -1004,5 +1005,131 @@ describe("the sub-issue tree of GET /api/issues/:owner/:repo/:number/details", (
 
     expect(items[0]?.children[0]?.children).toHaveLength(1);
     expect(fake.calls).toHaveLength(1);
+  });
+
+  it("orders the children of an issue by repo and number", async () => {
+    const alice = addUser(database.db, "octocat");
+    activate(alice.id);
+    const web = addRepo("acme", "web", [alice.id]);
+    const api = addRepo("acme", "api", [alice.id]);
+    const zeta = addRepo("zeta", "z", [alice.id]);
+    const epic = addIssue(web, 1);
+    addIssue(web, 2, 1000, { parentId: parentRef("acme/web", 1) });
+    for (const [repo, number] of [
+      [zeta, 1],
+      [web, 9],
+      [web, 3],
+      [api, 4],
+    ] as const) {
+      addIssue(repo, number, 1000, { parentId: parentRef("acme/web", 2) });
+    }
+    seedCache(epic, { subIssues: [sub("acme", "web", 2)] });
+
+    const { items } = await tree(
+      build(fakeInstallations().client),
+      signIn(database.db, alice.id).cookie,
+    );
+
+    expect(
+      items[0]?.children.map(
+        (node) => `${node.owner}/${node.repo}#${node.number}`,
+      ),
+    ).toEqual(["acme/api#4", "acme/web#3", "acme/web#9", "zeta/z#1"]);
+  });
+
+  it("does not treat a sub-issue in a repo outside the access as synced or attach children to it", () => {
+    const alice = addUser(database.db, "octocat");
+    const bob = addUser(database.db, "bob");
+    const web = addRepo("acme", "web", [alice.id, bob.id]);
+    const secret = addRepo("acme", "secret", [bob.id]);
+    addIssue(web, 1);
+    addIssue(web, 2);
+    addIssue(secret, 3, 1000, { subTotal: 1 });
+    addIssue(web, 5, 1000, { parentId: parentRef("acme/secret", 3) });
+    const root = { owner: "acme", repo: "web", number: 1 };
+    const listed = [
+      {
+        ...sub("acme", "secret", 3),
+        title: "Secret",
+        state: "OPEN" as const,
+        url: "u3",
+      },
+      {
+        ...sub("acme", "web", 2),
+        title: "Two",
+        state: "OPEN" as const,
+        url: "u2",
+      },
+    ];
+
+    const forAlice = buildSubIssueTree(database.db, alice.id, root, listed);
+    expect(forAlice[0]).toMatchObject({
+      number: 3,
+      synced: false,
+      subIssues: null,
+      children: [],
+    });
+    expect(forAlice[1]).toMatchObject({ number: 2, synced: true });
+    expect(JSON.stringify(forAlice)).not.toContain("#5");
+
+    const forBob = buildSubIssueTree(database.db, bob.id, root, listed);
+    expect(forBob[0]).toMatchObject({ number: 3, synced: true });
+    expect(forBob[0]?.children.map((node) => node.number)).toEqual([5]);
+  });
+
+  it("builds a level holding more synced issues than one query can match", () => {
+    const alice = addUser(database.db, "octocat");
+    const web = addRepo("acme", "web", [alice.id]);
+    const count = 1500;
+    addIssue(web, 1);
+    addIssue(web, 2, 1000, { parentId: parentRef("acme/web", 1) });
+    for (let number = 3; number < 3 + count; number++) {
+      addIssue(web, number, 1000, { parentId: parentRef("acme/web", 2) });
+    }
+    addIssue(web, 3 + count, 1000, {
+      parentId: parentRef("acme/web", 3 + count - 1),
+    });
+
+    const nodes = buildSubIssueTree(
+      database.db,
+      alice.id,
+      { owner: "acme", repo: "web", number: 1 },
+      [{ ...sub("acme", "web", 2), title: "Two", state: "OPEN", url: "u2" }],
+    );
+
+    const children = nodes[0]?.children ?? [];
+    expect(children).toHaveLength(count);
+    expect(children.at(-1)?.number).toBe(2 + count);
+    expect(children.at(-1)?.children.map((node) => node.number)).toEqual([
+      3 + count,
+    ]);
+  });
+
+  it("reads no issue beyond the listed ones when none of them is synced", () => {
+    const alice = addUser(database.db, "octocat");
+    const web = addRepo("acme", "web", [alice.id]);
+    addIssue(web, 1);
+    addIssue(web, 2, 1000, { parentId: parentRef("acme/web", 1) });
+    let selects = 0;
+    const counting = new Proxy(database.db, {
+      get(target, property) {
+        const value: unknown = Reflect.get(target, property, target);
+        if (property === "select") selects++;
+        return typeof value === "function"
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    }) as Db;
+
+    const nodes = buildSubIssueTree(
+      counting,
+      alice.id,
+      { owner: "acme", repo: "web", number: 1 },
+      [{ ...sub("acme", "web", 50), title: "Gone", state: "OPEN", url: "u50" }],
+    );
+
+    expect(nodes).toMatchObject([{ number: 50, synced: false, children: [] }]);
+    // One keyed lookup, plus the access subquery it embeds.
+    expect(selects).toBe(2);
   });
 });
