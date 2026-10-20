@@ -36,7 +36,7 @@ Crossboard runs as one container with one SQLite file. You need a Docker host, a
 docker pull ghcr.io/mdg-labs/crossboard:latest
 ```
 
-`:latest` and `:<version>` are published by each release and are multi-arch (`linux/amd64` and `linux/arm64`). `:nightly` follows the `main` branch and is `linux/amd64` only.
+`:<version>` is published by each release; `:latest` moves only when the release is the highest stable version tag, so pin `:<version>` for a deterministic pull. Both are multi-arch (`linux/amd64` and `linux/arm64`). `:nightly` follows the `main` branch and is `linux/amd64` only.
 
 ### 2. Run it with Docker Compose
 
