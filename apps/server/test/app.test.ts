@@ -253,12 +253,15 @@ describe("static SPA serving", () => {
 
   it("answers 404 in the error shape when the web app was not built", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    const response = await build(join(dir, "missing")).request("/settings", {
-      headers: member(),
-    });
-    const errors = logged.mock.calls.length;
-    logged.mockRestore();
-    expect(errors).toBe(0);
+    let response: Response;
+    try {
+      response = await build(join(dir, "missing")).request("/settings", {
+        headers: member(),
+      });
+      expect(logged.mock.calls).toEqual([]);
+    } finally {
+      logged.mockRestore();
+    }
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "Not found" },
